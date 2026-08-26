@@ -9,7 +9,7 @@ const int MTILE = 32;
 const int NTILE = 32;
 const int KTILE = 32;
 
-const int PREFETCH_DISTANCE = 16;
+const int PREFETCH_DISTANCE = 3;
 const int CACHE_LINE_SIZE = 64;
 const int CACHE_FILL_LEVEL = 3; // 0 -> PREFETCHNTA, 1 -> PREFETCH2, 2 -> PREFETCH1, 3 (default) -> PREFETCH0
 // PREFETCHNTA -> Fetched into a location that won't evict your regularly-reused working set
@@ -36,7 +36,7 @@ void matmul_prefetch(const float* A, const float* B, float* C,
             for (int pp = 0; pp < K; pp += KTILE) {
                 const int p_end = std::min(pp + KTILE, K);
                 // ---- Block-level prefetch: bring in the next pp-tile ----
-                const int next_pp = pp + KTILE;
+                const int next_pp = pp + KTILE * PREFETCH_DISTANCE;
                 if (next_pp < K) {
                     const int next_p_end = std::min(next_pp + KTILE, K);
                     // A tile: rows ii..i_end, columns next_pp..next_p_end
