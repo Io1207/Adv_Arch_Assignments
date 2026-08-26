@@ -1,6 +1,6 @@
 // matmul_prefetch.cpp — STAGE 2: CACHE BLOCKING + SOFTWARE PREFETCHING
 
-// #include <immintrin.h>
+#include <immintrin.h>
 #include <algorithm>
 
 #include "matmul.h"
