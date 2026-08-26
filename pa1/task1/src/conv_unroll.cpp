@@ -27,9 +27,7 @@ void conv_unroll(const float* in, float* out, const float* ker,
                     out_row[ox + 6] += in_row[ox + 6] * w;
                     out_row[ox + 7] += in_row[ox + 7] * w;
                 }
-                for (; ox < W; ++ox) {
-                    out_row[ox] += in_row[ox] * w;
-                }
+//                for (; ox < W; ++ox) { out_row[ox] += in_row[ox] * w; }
             }
         }
     }
