@@ -5,6 +5,7 @@
 #include <immintrin.h>
 #include "convolution.h"
 #include <cstring>
+#include <cmath>
 #include <algorithm>
 /*
 void conv_optimized(const float* in, float* out, const float* ker,
@@ -50,7 +51,7 @@ void conv_optimized(const float* in, float* out, const float* ker,
 
 namespace {
 	constexpr int KiB = 1024;
-	constexpr int L1D = 32 * KiB; 
+	constexpr int L1D = 48 * KiB; 
 }
 
 void conv_optimized_2_fma(const float* in, float* out, const float* ker,
@@ -130,6 +131,47 @@ void conv_optimized(const float* in, float* out, const float* ker,
                     }
                     for (; ox < W; ++ox) {           // scalar tail
                         out_row[ox] += in_row[ox] * w_scalar;
+                    }
+                }
+            }
+        }
+    }
+}
+
+void conv_optimized_sq(const float* in, float* out, const float* ker,
+               int H, int W, int K) {
+    const int p = K / 2;
+    const int in_stride = W + 2 * p;
+    const int unit_sz = static_cast<int>(sizeof(float));
+    // Square tile: kTileRows x kTileRows footprint, sized so the working
+    // set (K*K taps + 2 tile "planes" of floats) stays within L1D.
+    int kTileRows = static_cast<int>(
+        std::sqrt(static_cast<double>(L1D - unit_sz * K * K) / (2 * unit_sz)));
+    kTileRows = std::max(kTileRows, 8); // keep room for at least one AVX lane-width
+
+    std::memset(out, 0, sizeof(float) * static_cast<std::size_t>(H) * W);
+
+    for (int oy0 = 0; oy0 < H; oy0 += kTileRows) {
+        const int oy_end = std::min(oy0 + kTileRows, H);
+        for (int ox0 = 0; ox0 < W; ox0 += kTileRows) {
+            const int ox_end = std::min(ox0 + kTileRows, W);
+            for (int ky = 0; ky < K; ++ky) {
+                for (int kx = 0; kx < K; ++kx) {
+                    const float w_scalar = ker[ky * K + kx];
+                    const __m256 w = _mm256_set1_ps(w_scalar);
+                    for (int oy = oy0; oy < oy_end; ++oy) {
+                        const float* in_row = in + (oy + ky) * in_stride + kx;
+                        float* out_row = out + oy * W;
+                        int ox = ox0;
+                        for (; ox + 8 <= ox_end; ox += 8) {
+                            __m256 acc = _mm256_loadu_ps(out_row + ox);
+                            __m256 inv = _mm256_loadu_ps(in_row + ox);
+                            acc = _mm256_fmadd_ps(inv, w, acc);
+                            _mm256_storeu_ps(out_row + ox, acc);
+                        }
+                        for (; ox < ox_end; ++ox) {          // scalar tail
+                            out_row[ox] += in_row[ox] * w_scalar;
+                        }
                     }
                 }
             }

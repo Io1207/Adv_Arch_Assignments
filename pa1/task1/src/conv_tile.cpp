@@ -6,7 +6,7 @@
 
 namespace {
     constexpr int KiB = 1024;
-    constexpr int L1D = 32 * KiB; 
+    constexpr int L1D = 48 * KiB; 
 }
  
 void conv_tile_row(const float* in, float* out, const float* ker, int H, int W, int K) {
