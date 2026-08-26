@@ -2,8 +2,7 @@
 #include "convolution.h"
 #include <cstring>
 
-void conv_unroll(const float* in, float* out, const float* ker,
-                 int H, int W, int K) {
+void conv_unroll(const float* in, float* out, const float* ker, int H, int W, int K) {
     const int p = K / 2;
     const int in_stride = W + 2 * p;
  
@@ -15,9 +14,7 @@ void conv_unroll(const float* in, float* out, const float* ker,
             for (int oy = 0; oy < H; ++oy) {
                 const float* in_row = in + (oy + ky) * in_stride + kx;
                 float* out_row = out + oy * W;
- 
-                int ox = 0;
-                for (; ox + 8 <= W; ox += 8) {
+                for (int ox = 0; ox + 8 <= W; ox += 8) {
                     out_row[ox + 0] += in_row[ox + 0] * w;
                     out_row[ox + 1] += in_row[ox + 1] * w;
                     out_row[ox + 2] += in_row[ox + 2] * w;
@@ -27,7 +24,6 @@ void conv_unroll(const float* in, float* out, const float* ker,
                     out_row[ox + 6] += in_row[ox + 6] * w;
                     out_row[ox + 7] += in_row[ox + 7] * w;
                 }
-//                for (; ox < W; ++ox) { out_row[ox] += in_row[ox] * w; }
             }
         }
     }

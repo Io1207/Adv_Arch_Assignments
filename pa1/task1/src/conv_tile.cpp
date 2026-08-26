@@ -5,22 +5,20 @@
 #include <cmath>
 
 namespace {
-constexpr int KiB = 1024;
-constexpr int L1D = 32 * KiB; 
+    constexpr int KiB = 1024;
+    constexpr int L1D = 32 * KiB; 
 }
  
-void conv_tile(const float* in, float* out, const float* ker,
-               int H, int W, int K) {
-    const int p = K / 2;
+void conv_tile_row(const float* in, float* out, const float* ker, int H, int W, int K) {
+    const int p         = K / 2;
     const int in_stride = W + 2 * p;
-    const int unit_sz = int(sizeof(*in));
+    const int unit_sz   = int(sizeof(*in));
     const int kTileRows = (L1D - unit_sz * K * K) / (2 * unit_sz * W); 
  
     std::memset(out, 0, sizeof(float) * static_cast<std::size_t>(H) * W);
  
     for (int oy0 = 0; oy0 < H; oy0 += kTileRows) {
         const int oy_end = (oy0 + kTileRows < H) ? (oy0 + kTileRows) : H;
- 
         for (int ky = 0; ky < K; ++ky) {
             for (int kx = 0; kx < K; ++kx) {
                 const float w = ker[ky * K + kx];
@@ -45,7 +43,7 @@ void conv_tile(const float* in, float* out, const float* ker,
     }
 }
 
-void conv_tile_sq(const float* in, float* out, const float* ker,
+void conv_tile(const float* in, float* out, const float* ker,
                int H, int W, int K) {
     const int p = K / 2;
     const int in_stride = W + 2 * p;

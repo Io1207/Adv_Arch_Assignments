@@ -53,7 +53,7 @@ namespace {
 	constexpr int L1D = 32 * KiB; 
 }
 
-void conv_optimized(const float* in, float* out, const float* ker,
+void conv_optimized_2_fma(const float* in, float* out, const float* ker,
                            int H, int W, int K) {
     const int p = K / 2;
     const int in_stride = W + 2 * p;
@@ -95,7 +95,7 @@ void conv_optimized(const float* in, float* out, const float* ker,
     }
 }
 
-void conv_optimized_1_fma(const float* in, float* out, const float* ker,
+void conv_optimized(const float* in, float* out, const float* ker,
                      int H, int W, int K) {
     const int p = K / 2;
     const int in_stride = W + 2 * p;

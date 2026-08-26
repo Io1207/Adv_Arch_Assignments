@@ -13,7 +13,7 @@ void conv_reorder(const float* in, float* out, const float* ker,
  
     for (int ky = 0; ky < K; ++ky) {
         for (int kx = 0; kx < K; ++kx) {
-            const float w = ker[ky * K + kx];
+            float w = ker[ky * K + kx];
             for (int oy = 0; oy < H; ++oy) {
                 const float* in_row = in + (oy + ky) * in_stride + kx;
                 float* out_row = out + oy * W;
