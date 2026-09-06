@@ -1,188 +1,140 @@
-// matmul_prefetch.cpp — STAGE 2: CACHE BLOCKING + SOFTWARE PREFETCHING
+// matmul_prefetch.cpp — STAGE 2: CACHE BLOCKING + SOFTWARE PREFETCH (scalar, no SIMD)
+//
+// Goto/BLIS-style layering, sized for the i7-12650H P-core
+// (L1d 48 KB / 12-way, L2 1.25 MB, L3 24 MB):
+//
+//   packed A macro-panel   Mc x Kc  (128 x 256 -> 128 KB)  ....  resident in L2
+//   packed B macro-panel   Kc x N                          ....  resident in L3
+//     its  Kc x Nr  sliver  (256 x 3 -> 3 KB)              ....  resident in L1
+//   C micro-tile           Mr x Nr  (4 x 3)                ....  held in registers over all Kc
+//
+// Packing makes A and B contiguous so the panels actually stay resident instead of
+// conflict-missing (L1 has only 64 sets). _mm_prefetch then pulls the *next* micro-panel
+// a short distance ahead. The micro-kernel is 12 independent scalar FMA chains, enough
+// to hide scalar FMA latency (~4 cyc, 2/cyc issue) with no vector instructions.
 
-#include <immintrin.h>
+#include <immintrin.h>   // _mm_prefetch only
 #include <algorithm>
 #include <cstring>
-
+#include <vector>
 #include "matmul.h"
-
-// const int MTILE = 32;
-// const int NTILE = 32;
-// const int KTILE = 32;
-
-// const int PREFETCH_DISTANCE = 3;
-// const int CACHE_LINE_SIZE = 64;
-// const int CACHE_FILL_LEVEL = 3; // 0 -> PREFETCHNTA, 1 -> PREFETCH2, 2 -> PREFETCH1, 3 (default) -> PREFETCH0
-// // PREFETCHNTA -> Fetched into a location that won't evict your regularly-reused working set
-// // PREFETCH2 -> Fetch relatively far out, towards L3
-// // PREFETCH1 -> Fetch into L2 and beyond
-// // PREFETCH0 -> Fetch into L1 (For reusing soon)
-
-// void matmul_prefetch(const float* A, const float* B, float* C,
-//                      int M, int N, int K, int lda, int ldb, int ldc) {
-
-//     const int ELEMENTS_PER_LINE = CACHE_LINE_SIZE / sizeof(float);
-
-//     // Zero C once upfront, since we accumulate into it across pp blocks
-//     for (int i = 0; i < M; ++i) {
-//         for (int j = 0; j < N; ++j) {
-//             C[static_cast<long>(i) * ldc + j] = 0.0f;
-//         }
-//     }
-
-//     for (int ii = 0; ii < M; ii += MTILE) {
-//         const int i_end = std::min(ii + MTILE, M);
-//         for (int jj = 0; jj < N; jj += NTILE) {
-//             const int j_end = std::min(jj + NTILE, N);
-//             for (int pp = 0; pp < K; pp += KTILE) {
-//                 const int p_end = std::min(pp + KTILE, K);
-//                 // ---- Block-level prefetch: bring in the next pp-tile ----
-//                 const int next_pp = pp + KTILE * PREFETCH_DISTANCE;
-//                 if (next_pp < K) {
-//                     const int next_p_end = std::min(next_pp + KTILE, K);
-//                     // A tile: rows ii..i_end, columns next_pp..next_p_end
-//                     for (int i = ii; i < i_end; ++i) {
-//                         for (int p = next_pp; p < next_p_end; p += ELEMENTS_PER_LINE) {
-//                             __builtin_prefetch(&A[static_cast<long>(i) * lda + p], 0, CACHE_FILL_LEVEL);
-//                         }
-//                     }
-//                     // B tile: rows jj..j_end, columns next_pp..next_p_end (B is N x K, row-major)
-//                     for (int j = jj; j < j_end; ++j) {
-//                         for (int p = next_pp; p < next_p_end; p += ELEMENTS_PER_LINE) {
-//                             __builtin_prefetch(&B[static_cast<long>(j) * ldb + p], 0, CACHE_FILL_LEVEL);
-//                         }
-//                     }
-//                 }
-
-//                 // ---- Compute the current block ----
-//                 for (int i = ii; i < i_end; ++i) {
-//                     const float* a_row = &A[static_cast<long>(i) * lda];
-
-//                     for (int j = jj; j < j_end; ++j) {
-//                         const float* b_row = &B[static_cast<long>(j) * ldb];
-//                         float sum = 0.0f;
-
-//                         for (int p = pp; p < p_end; ++p) {
-//                             sum += a_row[p] * b_row[p];
-//                         }
-
-//                         C[static_cast<long>(i) * ldc + j] += sum;
-//                     }
-//                 }
-//             }
-//         }
-//     }
-// }
 
 namespace {
 
-    constexpr int kMTile = 64;
-    constexpr int kNTile = 64;
-    constexpr int kKTile = 256;
+    constexpr int kKc = 256;   // K block
+    constexpr int kMc = 128;   // M block  -> packed A + C block both fit L2
+    constexpr int kMr = 4;     // register tile rows
+    constexpr int kNr = 3;     // register tile cols   (kMr*kNr = 12 scalar accumulators)
 
-    constexpr int kJR = 4;
-    constexpr int kPrefetchDistance = 1;
-    constexpr int kCacheLineFloats = 64 / sizeof(float);
+    constexpr int kLine = 64 / sizeof(float);   // floats per cache line
+    constexpr int kPfK  = 8;                     // prefetch look-ahead inside the k-loop
 
-    inline float hsum256(__m256 v) {
-        __m128 lo = _mm256_castps256_ps128(v);
-        __m128 hi = _mm256_extractf128_ps(v, 1);
-        lo = _mm_add_ps(lo, hi);
-        __m128 shuf = _mm_movehdup_ps(lo);
-        __m128 sums = _mm_add_ps(lo, shuf);
-        shuf = _mm_movehl_ps(shuf, sums);
-        sums = _mm_add_ss(sums, shuf);
-        return _mm_cvtss_f32(sums);
+    inline int round_up(int x, int m) { return (x + m - 1) / m * m; }
+
+    // A[ic:ic+mc, pc:pc+kc] (row-major, stride lda) -> micro-panel order:
+    //   Apack[panel*(kMr*kc) + k*kMr + r],  ragged last panel zero-padded.
+    void pack_A(const float* __restrict__ A, int lda, int ic, int mc, int pc, int kc,
+                float* __restrict__ Apack) {
+        const int panels = round_up(mc, kMr) / kMr;
+        for (int panel = 0; panel < panels; ++panel) {
+            float* dst = Apack + static_cast<long>(panel) * kMr * kc;
+            const int r0 = panel * kMr;
+            const int rn = std::min(kMr, mc - r0);
+            for (int r = 0; r < rn; ++r) {
+                const float* src = A + static_cast<long>(ic + r0 + r) * lda + pc;
+                _mm_prefetch(reinterpret_cast<const char*>(src + kLine), _MM_HINT_T0);
+                for (int k = 0; k < kc; ++k) dst[k * kMr + r] = src[k];
+            }
+            for (int r = rn; r < kMr; ++r)
+                for (int k = 0; k < kc; ++k) dst[k * kMr + r] = 0.0f;
+        }
     }
 
-    inline float partial_dot(const float* a, const float* b, int p_start, int p_end) {
-        __m256 acc = _mm256_setzero_ps();
-        int p = p_start;
-        for (; p + 8 <= p_end; p += 8) {
-            acc = _mm256_fmadd_ps(_mm256_loadu_ps(a + p), _mm256_loadu_ps(b + p), acc);
+    // B is transposed: row j is contiguous over p (stride ldb). Slice [pc:pc+kc] of
+    // rows [0:n) -> micro-panel order:
+    //   Bpack[panel*(kNr*kc) + k*kNr + c],  ragged last panel zero-padded.
+    void pack_B(const float* __restrict__ B, int ldb, int n, int pc, int kc,
+                float* __restrict__ Bpack) {
+        const int panels = round_up(n, kNr) / kNr;
+        for (int panel = 0; panel < panels; ++panel) {
+            float* dst = Bpack + static_cast<long>(panel) * kNr * kc;
+            const int c0 = panel * kNr;
+            const int cn = std::min(kNr, n - c0);
+            for (int c = 0; c < cn; ++c) {
+                const float* src = B + static_cast<long>(c0 + c) * ldb + pc;
+                _mm_prefetch(reinterpret_cast<const char*>(src + kLine), _MM_HINT_T0);
+                for (int k = 0; k < kc; ++k) dst[k * kNr + c] = src[k];
+            }
+            for (int c = cn; c < kNr; ++c)
+                for (int k = 0; k < kc; ++k) dst[k * kNr + c] = 0.0f;
         }
-        float sum = hsum256(acc);
-        for (; p < p_end; ++p) sum += a[p] * b[p];
-        return sum;
+    }
+
+    // C[i0:i0+mr, j0:j0+nr] += Apanel(kMr x kc) . Bpanel(kc x kNr) over kc.
+    // 12 scalar accumulators live in registers for the whole k-loop.
+    inline void micro_kernel(const float* __restrict__ Apanel, const float* __restrict__ Bpanel,
+                             float* __restrict__ C, int i0, int j0, int kc,
+                             int mr, int nr, int ldc) {
+        float c00 = 0, c01 = 0, c02 = 0;
+        float c10 = 0, c11 = 0, c12 = 0;
+        float c20 = 0, c21 = 0, c22 = 0;
+        float c30 = 0, c31 = 0, c32 = 0;
+
+        #pragma GCC unroll 4
+        for (int k = 0; k < kc; ++k) {
+            const float* ap = Apanel + k * kMr;
+            const float* bp = Bpanel + k * kNr;
+            _mm_prefetch(reinterpret_cast<const char*>(ap + kPfK * kMr), _MM_HINT_T0);
+            _mm_prefetch(reinterpret_cast<const char*>(bp + kPfK * kNr), _MM_HINT_T0);
+            const float a0 = ap[0], a1 = ap[1], a2 = ap[2], a3 = ap[3];
+            const float b0 = bp[0], b1 = bp[1], b2 = bp[2];
+            c00 += a0 * b0; c01 += a0 * b1; c02 += a0 * b2;
+            c10 += a1 * b0; c11 += a1 * b1; c12 += a1 * b2;
+            c20 += a2 * b0; c21 += a2 * b1; c22 += a2 * b2;
+            c30 += a3 * b0; c31 += a3 * b1; c32 += a3 * b2;
+        }
+
+        const float res[kMr][kNr] = {{c00, c01, c02}, {c10, c11, c12},
+                                     {c20, c21, c22}, {c30, c31, c32}};
+        for (int r = 0; r < mr; ++r) {
+            float* c_row = C + static_cast<long>(i0 + r) * ldc + j0;
+            for (int c = 0; c < nr; ++c) c_row[c] += res[r][c];
+        }
     }
 }
 
 void matmul_prefetch(const float* A, const float* B, float* C,
                      int M, int N, int K, int lda, int ldb, int ldc) {
-    
-    for (int i = 0; i < M; ++i) {
-        std::memset(C + static_cast<long>(i) * ldc, 0, sizeof(float) * static_cast<std::size_t>(N));
-    }
+    for (int i = 0; i < M; ++i)
+        std::memset(C + static_cast<long>(i) * ldc, 0,
+                    sizeof(float) * static_cast<std::size_t>(N));
 
-    for (int ii = 0; ii < M; ii += kMTile) {
-        const int i_end = std::min(ii + kMTile, M);
-        for (int jj = 0; jj < N; jj += kNTile) {
-            const int j_end = std::min(jj + kNTile, N);
+    std::vector<float> Apack(static_cast<std::size_t>(round_up(kMc, kMr)) * kKc);
+    std::vector<float> Bpack(static_cast<std::size_t>(round_up(N, kNr)) * kKc);
 
-            for (int pp = 0; pp < K; pp += kKTile) {
-                const int p_end = std::min(pp + kKTile, K);
+    for (int pc = 0; pc < K; pc += kKc) {             // K panels — accumulate into C
+        const int kc = std::min(kKc, K - pc);
 
-                // Software prefetching: bring in the next pptile of A and B
-                const int next_pp = pp + kKTile * kPrefetchDistance;
-                if (next_pp < K) {
-                    const int next_p_end = std::min(next_pp + kKTile, K);
-                    for (int i = ii; i < i_end; ++i) {
-                        const float* a_row = A + static_cast<long>(i) * lda;
-                        for (int p = next_pp; p < next_p_end; p += kCacheLineFloats) {
-                            _mm_prefetch(reinterpret_cast<const char*>(a_row + p), _MM_HINT_T0);
-                        }
-                    }
-                    for (int j = jj; j < j_end; ++j) {
-                        const float* b_row = B + static_cast<long>(j) * ldb;
-                        for (int p = next_pp; p < next_p_end; p += kCacheLineFloats) {
-                            _mm_prefetch(reinterpret_cast<const char*>(b_row + p), _MM_HINT_T0);
-                        }
-                    }
-                }
+        pack_B(B, ldb, N, pc, kc, Bpack.data());      // -> L3
 
-                for (int i = ii; i < i_end; ++i) {
-                    const float* a_row = A + static_cast<long>(i) * lda;
-                    float* c_row = C + static_cast<long>(i) * ldc;
+        for (int ic = 0; ic < M; ic += kMc) {         // M panels
+            const int mc = std::min(kMc, M - ic);
+            pack_A(A, lda, ic, mc, pc, kc, Apack.data());   // -> L2
 
-                    int j = jj;
-                    for (; j + kJR <= j_end; j += kJR) {
-                        const float* b0 = B + static_cast<long>(j + 0) * ldb;
-                        const float* b1 = B + static_cast<long>(j + 1) * ldb;
-                        const float* b2 = B + static_cast<long>(j + 2) * ldb;
-                        const float* b3 = B + static_cast<long>(j + 3) * ldb;
+            const int mpanels = round_up(mc, kMr) / kMr;
+            for (int jr = 0; jr < N; jr += kNr) {      // B micro-panels
+                const int nr = std::min(kNr, N - jr);
+                const float* Bpanel =
+                    Bpack.data() + static_cast<long>(jr / kNr) * kNr * kc;
+                _mm_prefetch(reinterpret_cast<const char*>(Bpanel + kNr * kc), _MM_HINT_T0);
 
-                        __m256 acc0 = _mm256_setzero_ps();
-                        __m256 acc1 = _mm256_setzero_ps();
-                        __m256 acc2 = _mm256_setzero_ps();
-                        __m256 acc3 = _mm256_setzero_ps();
-
-                        int p = pp;
-                        for (; p + 8 <= p_end; p += 8) {
-                            const __m256 avec = _mm256_loadu_ps(a_row + p);
-                            acc0 = _mm256_fmadd_ps(avec, _mm256_loadu_ps(b0 + p), acc0);
-                            acc1 = _mm256_fmadd_ps(avec, _mm256_loadu_ps(b1 + p), acc1);
-                            acc2 = _mm256_fmadd_ps(avec, _mm256_loadu_ps(b2 + p), acc2);
-                            acc3 = _mm256_fmadd_ps(avec, _mm256_loadu_ps(b3 + p), acc3);
-                        }
-                        float s0 = hsum256(acc0), s1 = hsum256(acc1);
-                        float s2 = hsum256(acc2), s3 = hsum256(acc3);
-                        for (; p < p_end; ++p) {
-                            const float av = a_row[p];
-                            s0 += av * b0[p];
-                            s1 += av * b1[p];
-                            s2 += av * b2[p];
-                            s3 += av * b3[p];
-                        }
-                        c_row[j + 0] += s0;
-                        c_row[j + 1] += s1;
-                        c_row[j + 2] += s2;
-                        c_row[j + 3] += s3;
-                    }
-
-                    for (; j < j_end; ++j) {
-                        const float* b_row = B + static_cast<long>(j) * ldb;
-                        c_row[j] += partial_dot(a_row, b_row, pp, p_end);
-                    }
+                for (int p = 0; p < mpanels; ++p) {    // A micro-panels
+                    const int i0 = ic + p * kMr;
+                    const int mr = std::min(kMr, mc - p * kMr);
+                    const float* Apanel =
+                        Apack.data() + static_cast<long>(p) * kMr * kc;
+                    _mm_prefetch(reinterpret_cast<const char*>(Apanel + kMr * kc), _MM_HINT_T1);
+                    micro_kernel(Apanel, Bpanel, C, i0, jr, kc, mr, nr, ldc);
                 }
             }
         }

@@ -1,192 +1,189 @@
 // matmul_optimized.cpp  STAGE 3: PUT IT ALL TOGETHER
 //
-// This is the graded function AND the kernel that gets injected into llama.cpp. Combine
-// everything you have learned across the whole assignment  loop reordering, register
-// blocking and unrolling (Task 1 / Stage 1 here), cache tiling and software prefetch
-// (Stage 2)  and TUNE it to be as fast as you can. Your speedup over matmul_naive determines
-// your score (see the tier table the harness prints), and this same function will power a
-// real LLM inference via `make llama-demo`.
+// GEBP (Goto / BLIS) kernel: AVX2+FMA micro-kernel, cache blocking, on-the-fly packing,
+// and software prefetch. Tuned for the i7-12650H P-core (L1d 48 KB, L2 1.25 MB, L3 24 MB).
+//
+//   packed A panel   Mc x Kc          -> resident in L2
+//   packed B panel   Kc x N           -> resident in L3
+//     its Kc x Nr sliver              -> resident in L1
+//   C micro-tile     Mr x Nr = 6 x 16 -> 12 YMM accumulators, held across the whole Kc
+//
+// B arrives transposed (row j contiguous over the contraction index). pack_B gathers it
+// into k-major, Nr-contiguous panels so the micro-kernel is a pure broadcast+FMA stream
+// with NO horizontal reductions and an _mm256 add/store straight back into C.
 
 #include <immintrin.h>
 #include <algorithm>
-#include <cstring>
 #include <array>
+#include <cstdlib>
+#include <cstring>
 
 #include "matmul.h"
 
-constexpr int kIR = 4;
-constexpr int kJR = 2;
-constexpr int kNumAcc = 1;
-
 namespace {
 
-    constexpr int kMTile = 128;
-    constexpr int kNTile = 128;
-    constexpr int kKTile = 512;
-    constexpr int kPrefetchDistance = 1;
-    constexpr int kCacheLineFloats = 64 / sizeof(float);
-    constexpr int kSuperStep = 8 * kNumAcc;
+    constexpr int kMr  = 6;              // register-tile rows
+    constexpr int kNr  = 16;             // register-tile cols  (2 x __m256)
+    constexpr int kNrV = kNr / 8;        // vector columns per tile
 
-    inline float hsum256(__m256 v) {
-        __m128 lo = _mm256_castps256_ps128(v);
-        __m128 hi = _mm256_extractf128_ps(v, 1);
-        lo = _mm_add_ps(lo, hi);
-        __m128 shuf = _mm_movehdup_ps(lo);
-        __m128 sums = _mm_add_ps(lo, shuf);
-        shuf = _mm_movehl_ps(shuf, sums);
-        sums = _mm_add_ss(sums, shuf);
-        return _mm_cvtss_f32(sums);
+    constexpr int kKc = 256;             // K block
+    constexpr int kMc = 192;             // M block (multiple of kMr) -> packed A stays in L2
+    // Nc == N : the packed B panel lives in L3
+
+    constexpr int kPfDist = 16;          // k look-ahead for the in-kernel prefetch
+
+    inline int round_up(int x, int m) { return (x + m - 1) / m * m; }
+
+    inline float* alloc_aligned(std::size_t nfloats) {
+        std::size_t bytes = ((nfloats * sizeof(float)) + 63) & ~std::size_t(63);
+        return static_cast<float*>(std::aligned_alloc(64, bytes));
     }
 
-    inline float partial_dot(const float* a, const float* b, int p_start, int p_end) {
-        __m256 acc = _mm256_setzero_ps();
-        int p = p_start;
-        for (; p + 8 <= p_end; p += 8) {
-            acc = _mm256_fmadd_ps(_mm256_loadu_ps(a + p), _mm256_loadu_ps(b + p), acc);
-        }
-        float sum = hsum256(acc);
-        for (; p < p_end; ++p) sum += a[p] * b[p];
-        return sum;
-    }
-
-    inline void micro_kernel_full(const float* A, const float* B, float* C, int i0, int j0,
-                                  int pp, int p_end, int lda, int ldb, int ldc) {
-        std::array<const float*, kIR> a_rows;
-        std::array<const float*, kJR> b_rows;
-        #pragma GCC unroll 16
-        for (int r = 0; r < kIR; ++r) a_rows[r] = A + static_cast<long>(i0 + r) * lda;
-        #pragma GCC unroll 16
-        for (int c = 0; c < kJR; ++c) b_rows[c] = B + static_cast<long>(j0 + c) * ldb;
-
-        // acc[r][c][a]: kNumAcc independent accumulators per (r, c) position
-        std::array<std::array<std::array<__m256, kNumAcc>, kJR>, kIR> acc{};
-        #pragma GCC unroll 16
-        for (int r = 0; r < kIR; ++r)
-            #pragma GCC unroll 16
-            for (int c = 0; c < kJR; ++c)
-                #pragma GCC unroll 16
-                for (int a = 0; a < kNumAcc; ++a) acc[r][c][a] = _mm256_setzero_ps();
-
-        int p = pp;
-        for (; p + kSuperStep <= p_end; p += kSuperStep) {
-            std::array<std::array<__m256, kNumAcc>, kJR> bv;
-            #pragma GCC unroll 16
-            for (int c = 0; c < kJR; ++c)
-                #pragma GCC unroll 16
-                for (int a = 0; a < kNumAcc; ++a) bv[c][a] = _mm256_loadu_ps(b_rows[c] + p + a * 8);
-
-            #pragma GCC unroll 16
-            for (int r = 0; r < kIR; ++r) {
-                std::array<__m256, kNumAcc> av;
-                #pragma GCC unroll 16
-                for (int a = 0; a < kNumAcc; ++a) av[a] = _mm256_loadu_ps(a_rows[r] + p + a * 8);
-                #pragma GCC unroll 16
-                for (int c = 0; c < kJR; ++c) {
-                    #pragma GCC unroll 16
-                    for (int a = 0; a < kNumAcc; ++a) {
-                        acc[r][c][a] = _mm256_fmadd_ps(av[a], bv[c][a], acc[r][c][a]);
-                    }
-                }
-            }
-        }
-
-        
-        float sums[kIR][kJR];
-        #pragma GCC unroll 16
-        for (int r = 0; r < kIR; ++r) {
-            #pragma GCC unroll 16
-            for (int c = 0; c < kJR; ++c) {
-                __m256 combined = acc[r][c][0];
-                #pragma GCC unroll 16
-                for (int a = 1; a < kNumAcc; ++a) combined = _mm256_add_ps(combined, acc[r][c][a]);
-                sums[r][c] = hsum256(combined);
-            }
-        }
-
-        for (; p + 8 <= p_end; p += 8) {
-            std::array<__m256, kJR> bv;
-            #pragma GCC unroll 16
-            for (int c = 0; c < kJR; ++c) bv[c] = _mm256_loadu_ps(b_rows[c] + p);
-            #pragma GCC unroll 16
-            for (int r = 0; r < kIR; ++r) {
-                __m256 av = _mm256_loadu_ps(a_rows[r] + p);
-                #pragma GCC unroll 16
-                for (int c = 0; c < kJR; ++c) sums[r][c] += hsum256(_mm256_mul_ps(av, bv[c]));
-            }
-        }
-
-        for (; p < p_end; ++p) {
-            #pragma GCC unroll 16
-            for (int r = 0; r < kIR; ++r) {
-                const float av = a_rows[r][p];
-                #pragma GCC unroll 16
-                for (int c = 0; c < kJR; ++c) sums[r][c] += av * b_rows[c][p];
-            }
-        }
-
-        #pragma GCC unroll 16
-        for (int r = 0; r < kIR; ++r) {
-            float* c_row = C + static_cast<long>(i0 + r) * ldc;
-            #pragma GCC unroll 16
-            for (int c = 0; c < kJR; ++c) c_row[j0 + c] += sums[r][c];
+    // A[ic:ic+mc, pc:pc+kc] (row-major, stride lda)  ->  row-contiguous micro-panels
+    //   Apack[panel*(kMr*kc) + r*kc + k]   (ragged last panel zero-padded)
+    // The micro-kernel only broadcasts from A, so no transpose is needed: each row is a
+    // straight memcpy (vectorized libc, unaffected by -fno-tree-vectorize).
+    void pack_A(const float* __restrict__ A, int lda, int ic, int mc, int pc, int kc,
+                float* __restrict__ Apack) {
+        const int panels = round_up(mc, kMr) / kMr;
+        const std::size_t rb = sizeof(float) * static_cast<std::size_t>(kc);
+        for (int panel = 0; panel < panels; ++panel) {
+            float* dst = Apack + static_cast<long>(panel) * kMr * kc;
+            const int r0 = panel * kMr;
+            const int rn = std::min(kMr, mc - r0);
+            for (int r = 0; r < rn; ++r)
+                std::memcpy(dst + r * kc, A + static_cast<long>(ic + r0 + r) * lda + pc, rb);
+            for (int r = rn; r < kMr; ++r)
+                std::memset(dst + r * kc, 0, rb);
         }
     }
 
+    // B (transposed: row j contiguous over p, stride ldb), cols [0:n), slice [pc:pc+kc]
+    //   ->  Bpack[panel*(kc*kNr) + k*kNr + c]   (ragged last panel zero-padded)
+    void pack_B(const float* __restrict__ B, int ldb, int n, int pc, int kc,
+                float* __restrict__ Bpack) {
+        const int panels = round_up(n, kNr) / kNr;
+        for (int panel = 0; panel < panels; ++panel) {
+            float* dst = Bpack + static_cast<long>(panel) * kc * kNr;
+            const int c0 = panel * kNr;
+            const int cn = std::min(kNr, n - c0);
+            for (int c = 0; c < cn; ++c) {
+                const float* s = B + static_cast<long>(c0 + c) * ldb + pc;
+                for (int k = 0; k < kc; ++k) dst[k * kNr + c] = s[k];
+            }
+            for (int c = cn; c < kNr; ++c)
+                for (int k = 0; k < kc; ++k) dst[k * kNr + c] = 0.0f;
+        }
+    }
+
+    // C[i0:i0+mr, j0:j0+nr] += Apanel(kMr x kc) . Bpanel(kc x kNr)   over kc.
+    // Apanel / Bpanel are contiguous and 32-byte aligned.
+    inline void micro_kernel(const float* __restrict__ Ap, const float* __restrict__ Bp,
+                             float* __restrict__ C, int i0, int j0, int kc,
+                             int mr, int nr, int ldc) {
+        std::array<std::array<__m256, kNrV>, kMr> acc;
+        #pragma GCC unroll 8
+        for (int r = 0; r < kMr; ++r)
+            #pragma GCC unroll 8
+            for (int v = 0; v < kNrV; ++v) acc[r][v] = _mm256_setzero_ps();
+
+        for (int k = 0; k < kc; ++k) {
+            std::array<__m256, kNrV> bv;
+            #pragma GCC unroll 8
+            for (int v = 0; v < kNrV; ++v) bv[v] = _mm256_load_ps(Bp + k * kNr + v * 8);
+
+            _mm_prefetch(reinterpret_cast<const char*>(Bp + (k + kPfDist) * kNr), _MM_HINT_T0);
+
+            #pragma GCC unroll 8
+            for (int r = 0; r < kMr; ++r) {
+                const __m256 av = _mm256_broadcast_ss(Ap + r * kc + k);
+                #pragma GCC unroll 8
+                for (int v = 0; v < kNrV; ++v)
+                    acc[r][v] = _mm256_fmadd_ps(av, bv[v], acc[r][v]);
+            }
+        }
+
+        if (mr == kMr && nr == kNr) {
+            #pragma GCC unroll 8
+            for (int r = 0; r < kMr; ++r) {
+                float* cr = C + static_cast<long>(i0 + r) * ldc + j0;
+                #pragma GCC unroll 8
+                for (int v = 0; v < kNrV; ++v)
+                    _mm256_storeu_ps(cr + v * 8,
+                                     _mm256_add_ps(_mm256_loadu_ps(cr + v * 8), acc[r][v]));
+            }
+        } else {
+            alignas(32) float buf[kMr][kNr];
+            #pragma GCC unroll 8
+            for (int r = 0; r < kMr; ++r)
+                #pragma GCC unroll 8
+                for (int v = 0; v < kNrV; ++v) _mm256_store_ps(buf[r] + v * 8, acc[r][v]);
+            for (int r = 0; r < mr; ++r) {
+                float* cr = C + static_cast<long>(i0 + r) * ldc + j0;
+                for (int c = 0; c < nr; ++c) cr[c] += buf[r][c];
+            }
+        }
+    }
+
+    // Scalar fallback used if the pack buffers can't be allocated (never expected).
+    void matmul_ref(const float* A, const float* B, float* C,
+                    int M, int N, int K, int lda, int ldb, int ldc) {
+        for (int i = 0; i < M; ++i)
+            for (int j = 0; j < N; ++j) {
+                float s = 0.0f;
+                for (int p = 0; p < K; ++p)
+                    s += A[static_cast<long>(i) * lda + p] * B[static_cast<long>(j) * ldb + p];
+                C[static_cast<long>(i) * ldc + j] = s;
+            }
+    }
 }
 
 void matmul_optimized(const float* A, const float* B, float* C,
                       int M, int N, int K, int lda, int ldb, int ldc) {
-    for (int i = 0; i < M; ++i) {
+    for (int i = 0; i < M; ++i)
         std::memset(C + static_cast<long>(i) * ldc, 0,
                     sizeof(float) * static_cast<std::size_t>(N));
+
+    const int Mc_pad = round_up(kMc, kMr);
+    const int N_pad  = round_up(N, kNr);
+    float* Apack = alloc_aligned(static_cast<std::size_t>(Mc_pad) * kKc);
+    float* Bpack = alloc_aligned(static_cast<std::size_t>(std::max(N_pad, kNr)) * kKc);
+    if (!Apack || !Bpack) {
+        std::free(Apack);
+        std::free(Bpack);
+        matmul_ref(A, B, C, M, N, K, lda, ldb, ldc);
+        return;
     }
 
-    for (int ii = 0; ii < M; ii += kMTile) {
-        const int i_end = std::min(ii + kMTile, M);
-        for (int jj = 0; jj < N; jj += kNTile) {
-            const int j_end = std::min(jj + kNTile, N);
+    for (int pc = 0; pc < K; pc += kKc) {              // K panels — C accumulates
+        const int kc = std::min(kKc, K - pc);
+        pack_B(B, ldb, N, pc, kc, Bpack);              // -> L3
 
-            for (int pp = 0; pp < K; pp += kKTile) {
-                const int p_end = std::min(pp + kKTile, K);
+        for (int ic = 0; ic < M; ic += kMc) {          // M panels
+            const int mc = std::min(kMc, M - ic);
+            pack_A(A, lda, ic, mc, pc, kc, Apack);      // -> L2
+            const int mpanels = round_up(mc, kMr) / kMr;
 
-                const int next_pp = pp + kKTile * kPrefetchDistance;
-                if (next_pp < K) {
-                    const int next_p_end = std::min(next_pp + kKTile, K);
-                    for (int i = ii; i < i_end; ++i) {
-                        const float* a_row = A + static_cast<long>(i) * lda;
-                        for (int p = next_pp; p < next_p_end; p += kCacheLineFloats)
-                            _mm_prefetch(reinterpret_cast<const char*>(a_row + p), _MM_HINT_T0);
-                    }
-                    for (int j = jj; j < j_end; ++j) {
-                        const float* b_row = B + static_cast<long>(j) * ldb;
-                        for (int p = next_pp; p < next_p_end; p += kCacheLineFloats)
-                            _mm_prefetch(reinterpret_cast<const char*>(b_row + p), _MM_HINT_T0);
-                    }
-                }
+            for (int jr = 0; jr < N; jr += kNr) {       // B micro-panels
+                const int nr = std::min(kNr, N - jr);
+                const float* Bp = Bpack + static_cast<long>(jr / kNr) * kc * kNr;
+                _mm_prefetch(reinterpret_cast<const char*>(Bp + kc * kNr), _MM_HINT_T0);
 
-                int i = ii;
-                for (; i + kIR <= i_end; i += kIR) {
-                    int j = jj;
-                    for (; j + kJR <= j_end; j += kJR) {
-                        micro_kernel_full(A, B, C, i, j, pp, p_end, lda, ldb, ldc);
-                    }
-                    for (; j < j_end; ++j) {  // N remainder within tile
-                        const float* b_row = B + static_cast<long>(j) * ldb;
-                        for (int r = 0; r < kIR; ++r) {
-                            const float* a_row = A + static_cast<long>(i + r) * lda;
-                            C[static_cast<long>(i + r) * ldc + j] += partial_dot(a_row, b_row, pp, p_end);
-                        }
-                    }
-                }
-                for (; i < i_end; ++i) {  // M remainder within tile
-                    const float* a_row = A + static_cast<long>(i) * lda;
-                    float* c_row = C + static_cast<long>(i) * ldc;
-                    for (int j = jj; j < j_end; ++j) {
-                        const float* b_row = B + static_cast<long>(j) * ldb;
-                        c_row[j] += partial_dot(a_row, b_row, pp, p_end);
-                    }
+                for (int q = 0; q < mpanels; ++q) {     // A micro-panels
+                    const int i0 = ic + q * kMr;
+                    const int mr = std::min(kMr, mc - q * kMr);
+                    const float* Ap = Apack + static_cast<long>(q) * kMr * kc;
+                    _mm_prefetch(reinterpret_cast<const char*>(Ap + kMr * kc), _MM_HINT_T1);
+                    for (int r = 0; r < mr; ++r)
+                        _mm_prefetch(reinterpret_cast<const char*>(
+                                         C + static_cast<long>(i0 + r) * ldc + jr),
+                                     _MM_HINT_T0);
+                    micro_kernel(Ap, Bp, C, i0, jr, kc, mr, nr, ldc);
                 }
             }
         }
     }
+
+    std::free(Apack);
+    std::free(Bpack);
 }
