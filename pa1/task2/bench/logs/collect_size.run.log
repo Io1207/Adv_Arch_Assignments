@@ -1,0 +1,21 @@
+N=512   naive           69.774 ms      3.85 GF/s     1.00x  L1D-MPKI=  0.37  verify=OK
+N=512   simd             2.976 ms     90.19 GF/s    23.44x  L1D-MPKI= 19.48  verify=OK
+N=512   prefetch        36.670 ms      7.32 GF/s     1.90x  L1D-MPKI=  0.63  verify=OK
+N=512   optimized        3.629 ms     73.97 GF/s    19.23x  L1D-MPKI=  5.45  verify=OK
+
+N=1024  naive          594.122 ms      3.61 GF/s     1.00x  L1D-MPKI=  0.60  verify=OK
+N=1024  simd            26.808 ms     80.11 GF/s    22.16x  L1D-MPKI= 12.57  verify=OK
+N=1024  prefetch       243.034 ms      8.84 GF/s     2.44x  L1D-MPKI=  0.61  verify=OK
+N=1024  optimized       21.753 ms     98.72 GF/s    27.31x  L1D-MPKI=  5.99  verify=OK
+
+N=2048  naive         5596.364 ms      3.07 GF/s     1.00x  L1D-MPKI=  0.42  verify=OK
+N=2048  simd           235.787 ms     72.86 GF/s    23.73x  L1D-MPKI= 21.68  verify=OK
+N=2048  prefetch      1819.571 ms      9.44 GF/s     3.08x  L1D-MPKI=  0.61  verify=OK
+N=2048  optimized      183.673 ms     93.54 GF/s    30.47x  L1D-MPKI=  5.80  verify=OK
+
+N=4096  naive        45144.051 ms      3.04 GF/s     1.00x  L1D-MPKI=  0.35  verify=OK
+N=4096  simd          3812.513 ms     36.05 GF/s    11.84x  L1D-MPKI=104.25  verify=OK
+N=4096  prefetch     12410.981 ms     11.07 GF/s     3.64x  L1D-MPKI=  0.62  verify=OK
+N=4096  optimized     1276.530 ms    107.67 GF/s    35.36x  L1D-MPKI=  5.96  verify=OK
+
+logged to /home/keyaan/Documents/SEM7/CS683/ASSIGNMENTS/Adv_Arch_Assignments/pa1/task2/bench/logs/task2_size.csv

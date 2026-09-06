@@ -1,23 +1,21 @@
-N=128   naive      1.521 ms    1.00x  IPC= 4.09  verify=OK
-N=128   acc1       0.274 ms    5.55x  IPC= 4.35  verify=OK
-N=128   acc2       0.276 ms    5.51x  IPC= 3.85  verify=OK
-N=128   acc4       0.517 ms    2.94x  IPC= 4.09  verify=OK
-N=256   naive      6.371 ms    1.00x  IPC= 3.57  verify=OK
-N=256   acc1       1.864 ms    3.42x  IPC= 4.69  verify=OK
-N=256   acc2       1.590 ms    4.01x  IPC= 4.01  verify=OK
-N=256   acc4       1.474 ms    4.32x  IPC= 4.10  verify=OK
-N=512   naive     56.308 ms    1.00x  IPC= 3.22  verify=OK
-N=512   acc1       7.065 ms    7.97x  IPC= 4.77  verify=OK
-N=512   acc2       7.666 ms    7.34x  IPC= 4.05  verify=OK
-N=512   acc4      14.628 ms    3.85x  IPC= 4.10  verify=OK
-N=1024  naive    447.799 ms    1.00x  IPC= 3.08  verify=OK
-N=1024  acc1      53.774 ms    8.33x  IPC= 4.59  verify=OK
-N=1024  acc2      45.956 ms    9.74x  IPC= 3.92  verify=OK
-N=1024  acc4      98.199 ms    4.56x  IPC= 4.07  verify=OK
-N=2048  naive   3825.103 ms    1.00x  IPC= 2.90  verify=OK
-N=2048  acc1     479.826 ms    7.97x  IPC= 4.49  verify=OK
-N=2048  acc2     423.896 ms    9.02x  IPC= 3.83  verify=OK
-N=2048  acc4     917.474 ms    4.17x  IPC= 4.05  verify=OK
+N=512   naive      55.912 ms      4.80 GF/s    1.00x  IPC= 3.21  verify=OK
+N=512   acc1        5.070 ms     52.95 GF/s   11.03x  IPC= 2.67  verify=OK
+N=512   acc2        7.731 ms     34.72 GF/s    7.23x  IPC= 3.46  verify=OK
+N=512   acc4        7.554 ms     35.54 GF/s    7.40x  IPC= 3.69  verify=OK
+
+N=1024  naive     476.696 ms      4.50 GF/s    1.00x  IPC= 3.05  verify=OK
+N=1024  acc1       40.840 ms     52.58 GF/s   11.67x  IPC= 2.22  verify=OK
+N=1024  acc2       70.628 ms     30.41 GF/s    6.75x  IPC= 3.27  verify=OK
+N=1024  acc4       71.501 ms     30.03 GF/s    6.67x  IPC= 3.50  verify=OK
+
+N=2048  naive    4539.620 ms      3.78 GF/s    1.00x  IPC= 2.70  verify=OK
+N=2048  acc1      496.183 ms     34.62 GF/s    9.15x  IPC= 1.59  verify=OK
+N=2048  acc2      688.758 ms     24.94 GF/s    6.59x  IPC= 2.41  verify=OK
+N=2048  acc4      821.280 ms     20.92 GF/s    5.53x  IPC= 2.70  verify=OK
+
+N=4096  naive   37091.867 ms      3.71 GF/s    1.00x  IPC= 2.52  verify=OK
+N=4096  acc1     7498.854 ms     18.33 GF/s    4.95x  IPC= 0.91  verify=OK
+N=4096  acc2     8640.135 ms     15.91 GF/s    4.29x  IPC= 1.71  verify=OK
+N=4096  acc4     8128.186 ms     16.91 GF/s    4.56x  IPC= 1.58  verify=OK
 
 logged to /home/keyaan/Documents/SEM7/CS683/ASSIGNMENTS/Adv_Arch_Assignments/pa1/task2/bench/logs/task2c_optimized.csv
-OPT_DONE 0

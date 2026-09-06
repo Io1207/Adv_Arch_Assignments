@@ -1,0 +1,43 @@
+N=512   dist=0    hint=T0      66.774 ms   0.869x  verify=OK
+N=512   dist=16   hint=NTA    130.889 ms   0.443x  verify=OK
+N=512   dist=16   hint=T2     132.008 ms   0.439x  verify=OK
+N=512   dist=16   hint=T1     125.491 ms   0.462x  verify=OK
+N=512   dist=16   hint=T0     120.514 ms   0.481x  verify=OK
+N=512   dist=64   hint=NTA    135.630 ms   0.428x  verify=OK
+N=512   dist=64   hint=T2     120.689 ms   0.481x  verify=OK
+N=512   dist=64   hint=T1     133.402 ms   0.435x  verify=OK
+N=512   dist=64   hint=T0     133.477 ms   0.435x  verify=OK
+N=512   dist=256  hint=NTA    130.041 ms   0.446x  verify=OK
+N=512   dist=256  hint=T2     125.318 ms   0.463x  verify=OK
+N=512   dist=256  hint=T1     139.815 ms   0.415x  verify=OK
+N=512   dist=256  hint=T0     140.103 ms   0.414x  verify=OK
+
+N=1024  dist=0    hint=T0     501.505 ms   0.962x  verify=OK
+N=1024  dist=16   hint=NTA   1192.231 ms   0.404x  verify=OK
+N=1024  dist=16   hint=T2    1111.669 ms   0.434x  verify=OK
+N=1024  dist=16   hint=T1    1032.103 ms   0.467x  verify=OK
+N=1024  dist=16   hint=T0    1001.202 ms   0.482x  verify=OK
+N=1024  dist=64   hint=NTA    959.979 ms   0.502x  verify=OK
+N=1024  dist=64   hint=T2    1020.742 ms   0.472x  verify=OK
+N=1024  dist=64   hint=T1    1010.579 ms   0.477x  verify=OK
+N=1024  dist=64   hint=T0     979.713 ms   0.492x  verify=OK
+N=1024  dist=256  hint=NTA   1082.124 ms   0.446x  verify=OK
+N=1024  dist=256  hint=T2    1104.191 ms   0.437x  verify=OK
+N=1024  dist=256  hint=T1    1068.410 ms   0.451x  verify=OK
+N=1024  dist=256  hint=T0     971.825 ms   0.496x  verify=OK
+
+N=2048  dist=0    hint=T0    4363.009 ms   0.972x  verify=OK
+N=2048  dist=16   hint=NTA   8743.635 ms   0.485x  verify=OK
+N=2048  dist=16   hint=T2    8442.689 ms   0.502x  verify=OK
+N=2048  dist=16   hint=T1    8217.398 ms   0.516x  verify=OK
+N=2048  dist=16   hint=T0    8404.280 ms   0.505x  verify=OK
+N=2048  dist=64   hint=NTA   8278.965 ms   0.512x  verify=OK
+N=2048  dist=64   hint=T2    8616.051 ms   0.492x  verify=OK
+N=2048  dist=64   hint=T1    7890.031 ms   0.538x  verify=OK
+N=2048  dist=64   hint=T0    8548.355 ms   0.496x  verify=OK
+N=2048  dist=256  hint=NTA   8471.580 ms   0.501x  verify=OK
+N=2048  dist=256  hint=T2    8165.829 ms   0.519x  verify=OK
+N=2048  dist=256  hint=T1    8084.785 ms   0.525x  verify=OK
+N=2048  dist=256  hint=T0    8004.727 ms   0.530x  verify=OK
+
+logged to /home/keyaan/Documents/SEM7/CS683/ASSIGNMENTS/Adv_Arch_Assignments/pa1/task2/bench/logs/task2a_prefetch.csv

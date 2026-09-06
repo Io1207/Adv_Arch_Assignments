@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
-"""collect_simd.py -- Task 2B benchmark driver.
+"""collect_simd.py -- Task 2B driver (README plot 4, "speedup vs. SIMD width").
 
-Times and perf-profiles the two SIMD widths (simd128 = SSE/__m128, 4-wide;
-simd256 = AVX2/__m256, 8-wide) against matmul_naive, across a grid of square
-M=N=K matrix sizes. Both variants keep the naive (i,j,p) loop order -- no
-register blocking, no tiling, no prefetch (that combination is Task 2C).
-512-bit (AVX-512) is not tested: this machine has no avx512* flags. Appends
-one CSV row per (stage, M, N, K) to logs/task2b_simd.csv.
+Times and perf-profiles the SIMD register-width variants
+(bench/simd_widths.cpp) against matmul_naive across square M=N=K sizes:
 
-Usage:   ./collect_simd.py
-Requires ./bench_stage already built (`make`) and perf readable as a
-non-root user. CPU_PIN follows the same P-core-pinning rationale as Task 1
-(this hybrid CPU's E-core PMU does not support L1-dcache-load-misses).
+    simd128 = SSE  / __m128  (4 lanes)
+    simd256 = AVX2 / __m256  (8 lanes)
+    simd512 = AVX-512 / __m512 (16 lanes) -- only if `lscpu` shows an
+              avx512 flag AND ./bench_stage_avx512 has been built
+              (`make bench_stage_avx512`); this i7-12650H has no AVX-512.
+
+Every variant keeps the naive (i,j,p) loop order with a single accumulator
+and vectorises only the K dot product, so the plot isolates register width.
+Instruction count (perf) is the key Task 2B metric; execution time / speedup
+are always collected. One CSV row per (stage, N) to logs/task2b_simd.csv.
 """
 import csv
 import re
@@ -21,13 +23,12 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 BENCH = HERE / "bench_stage"
+BENCH512 = HERE / "bench_stage_avx512"
 LOG = HERE / "logs" / "task2b_simd.csv"
 
 CPU_PIN = 2
 SEED = 1234
-SIZES = [128, 256, 512, 1024, 2048]
-
-STAGES = [("naive", "naive"), ("simd128", "simd128"), ("simd256", "simd256")]
+SIZES = [512, 1024, 2048, 4096]
 
 PERF_EVENTS = [
     "cpu_core/instructions/",
@@ -36,32 +37,65 @@ PERF_EVENTS = [
     "cpu_core/L1-dcache-load-misses/",
 ]
 
+TARGET_TIME_MS = 400.0
 TARGET_PERF_MS = 300.0
-MIN_REPS, MAX_REPS = 3, 200
 
 
 def run(cmd):
     return subprocess.run(cmd, capture_output=True, text=True)
 
 
-def verify(stage_key, M, N, K):
-    r = run([str(BENCH), "loop", stage_key, str(M), str(N), str(K), "1", str(SEED), "--verify"])
+def perf_available():
+    r = run(["perf", "stat", "-x,", "-e", "cpu_core/instructions/", "--", "true"])
+    bad = ("not supported", "No supported events", "Access to performance monitoring")
+    return not any(b in r.stderr for b in bad)
+
+
+def have_avx512():
+    r = run(["lscpu"])
+    return "avx512" in r.stdout.lower() and BENCH512.exists()
+
+
+def stages():
+    st = [("naive", "naive", BENCH), ("simd128", "simd128", BENCH),
+          ("simd256", "simd256", BENCH)]
+    if have_avx512():
+        st.append(("simd512", "simd512", BENCH512))
+    return st
+
+
+def verify(bench, key, M, N, K):
+    r = run([str(bench), "loop", key, str(M), str(N), str(K), "1", str(SEED), "--verify"])
     m = re.search(r"max_abs_diff=([\d.eE+-]+) \((OK|FAIL)\)", r.stderr)
-    if not m:
-        return "ERR", r.stderr.strip()
-    return m.group(2), float(m.group(1))
+    return (m.group(2), float(m.group(1))) if m else ("ERR", r.stderr.strip()[:80])
 
 
-def time_stage(stage_key, M, N, K, warmup=1, reps=3):
-    r = run([str(BENCH), "time", stage_key, str(M), str(N), str(K), str(warmup), str(reps), str(SEED)])
+def probe_ms(bench, key, M, N, K):
+    r = run([str(bench), "time", key, str(M), str(N), str(K), "0", "1", str(SEED)])
+    try:
+        return float(r.stdout.strip().split(",")[0])
+    except Exception:
+        return None
+
+
+def pick_reps(t_ms, target):
+    if t_ms is None or t_ms <= 0:
+        return 1, 3
+    return (1 if t_ms < 100.0 else 0), max(1, min(9, round(target / t_ms)))
+
+
+def time_stage(bench, key, M, N, K, t_probe):
+    warmup, reps = pick_reps(t_probe, TARGET_TIME_MS)
+    r = run([str(bench), "time", key, str(M), str(N), str(K),
+             str(warmup), str(reps), str(SEED)])
     ms, gflops = r.stdout.strip().split(",")
     return float(ms), float(gflops)
 
 
-def perf_stage(stage_key, M, N, K, reps):
+def perf_stage(bench, key, M, N, K, reps):
     cmd = ["taskset", "-c", str(CPU_PIN), "perf", "stat", "-x,",
            "-e", ",".join(PERF_EVENTS), "--",
-           str(BENCH), "loop", stage_key, str(M), str(N), str(K), str(reps), str(SEED)]
+           str(bench), "loop", key, str(M), str(N), str(K), str(reps), str(SEED)]
     r = run(cmd)
     vals = {}
     for line in r.stderr.splitlines():
@@ -75,47 +109,61 @@ def perf_stage(stage_key, M, N, K, reps):
 
 def main():
     LOG.parent.mkdir(parents=True, exist_ok=True)
-    new_file = not LOG.exists()
-    with open(LOG, "a", newline="") as f:
-        writer = csv.writer(f)
+    have_perf = perf_available()
+    if not have_perf:
+        print("note: perf counters unavailable; timing/speedup only "
+              "(instruction-count column will be blank).\n")
+
+    new_file = True  # always write a fresh, complete log
+    with open(LOG, "w", newline="") as f:
+        w = csv.writer(f)
         if new_file:
-            writer.writerow([
+            w.writerow([
                 "stage", "M", "N", "K", "seed", "verify_status", "verify_max_abs_diff",
                 "time_ms", "gflops", "speedup_vs_naive", "perf_reps",
-                "instructions", "cycles", "l1d_loads", "l1d_load_misses", "l1d_mpki", "ipc",
+                "instructions", "cycles", "ipc",
+                "l1d_loads", "l1d_load_misses", "l1d_mpki",
             ])
 
         for N in SIZES:
             M = K = N
             naive_ms = None
-            for label, stage_key in STAGES:
-                status, err = verify(stage_key, M, N, K)
-                ms, gflops = time_stage(stage_key, M, N, K)
+            for label, key, bench in stages():
+                status, err = verify(bench, key, M, N, K)
+                tp = probe_ms(bench, key, M, N, K)
+                ms, gflops = time_stage(bench, key, M, N, K, tp)
                 if label == "naive":
                     naive_ms = ms
                 speedup = (naive_ms / ms) if naive_ms else 0.0
 
-                reps = max(MIN_REPS, min(MAX_REPS, round(TARGET_PERF_MS / max(ms, 1e-6))))
-                perf_vals = perf_stage(stage_key, M, N, K, reps)
-                instr = perf_vals.get("cpu_core/instructions/")
-                cycles = perf_vals.get("cpu_core/cycles/")
-                l1_loads = perf_vals.get("cpu_core/L1-dcache-loads/")
-                l1_misses = perf_vals.get("cpu_core/L1-dcache-load-misses/")
-                mpki = (l1_misses / instr * 1000.0) if (instr and l1_misses is not None) else None
-                ipc = (instr / cycles) if (instr and cycles) else None
+                instr = cycles = ipc = l1l = l1m = mpki = None
+                reps = 0
+                if have_perf:
+                    reps = max(1, min(300, round(TARGET_PERF_MS / max(ms, 1e-6))))
+                    pv = perf_stage(bench, key, M, N, K, reps)
+                    instr = pv.get("cpu_core/instructions/")
+                    cycles = pv.get("cpu_core/cycles/")
+                    l1l = pv.get("cpu_core/L1-dcache-loads/")
+                    l1m = pv.get("cpu_core/L1-dcache-load-misses/")
+                    ipc = (instr / cycles) if (instr and cycles) else None
+                    mpki = (l1m / instr * 1000.0) if (instr and l1m is not None) else None
 
-                writer.writerow([
+                def s(x, fmt="{}"):
+                    return "" if x is None else fmt.format(x)
+
+                w.writerow([
                     label, M, N, K, SEED, status, err,
-                    f"{ms:.6f}", f"{gflops:.6f}", f"{speedup:.6f}",
-                    reps, instr, cycles, l1_loads, l1_misses,
-                    f"{mpki:.6f}" if mpki is not None else "",
-                    f"{ipc:.6f}" if ipc is not None else "",
+                    f"{ms:.6f}", f"{gflops:.6f}", f"{speedup:.6f}", reps,
+                    s(instr), s(cycles), s(ipc, "{:.6f}"),
+                    s(l1l), s(l1m), s(mpki, "{:.6f}"),
                 ])
                 f.flush()
-                instr_s = f"{instr/1e6:8.1f}M" if instr else "     n/a"
-                print(f"N={N:<5} {label:<8} {ms:9.3f} ms  {speedup:6.2f}x  instr={instr_s}  verify={status}")
+                instr_s = f"{instr/1e9:6.2f}G" if instr else "   -  "
+                print(f"N={N:<5} {label:<8} {ms:10.3f} ms  {gflops:8.2f} GF/s  "
+                      f"{speedup:6.2f}x  instr={instr_s}  verify={status}")
+            print()
 
-    print(f"\nlogged to {LOG}")
+    print(f"logged to {LOG}")
 
 
 if __name__ == "__main__":

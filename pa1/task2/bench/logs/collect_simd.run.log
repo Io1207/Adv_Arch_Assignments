@@ -1,18 +1,17 @@
-N=128   naive        1.519 ms    1.00x  instr=  2517.9M  verify=OK
-N=128   simd128      0.411 ms    3.70x  instr=   586.1M  verify=OK
-N=128   simd256      0.236 ms    6.45x  instr=   333.3M  verify=OK
-N=256   naive        6.362 ms    1.00x  instr=  4776.3M  verify=OK
-N=256   simd128      1.929 ms    3.30x  instr=  3460.3M  verify=OK
-N=256   simd256      2.268 ms    2.81x  instr=  1569.5M  verify=OK
-N=512   naive       54.949 ms    1.00x  instr=  4075.6M  verify=OK
-N=512   simd128     17.873 ms    3.07x  instr=  2964.3M  verify=OK
-N=512   simd256      7.391 ms    7.44x  instr=  3691.1M  verify=OK
-N=1024  naive      451.270 ms    1.00x  instr= 19497.1M  verify=OK
-N=1024  simd128    166.772 ms    2.71x  instr=  4207.8M  verify=OK
-N=1024  simd256     84.776 ms    5.32x  instr=  2893.5M  verify=OK
-N=2048  naive     3910.295 ms    1.00x  instr=155361.7M  verify=OK
-N=2048  simd128   1761.947 ms    2.22x  instr= 32965.8M  verify=OK
-N=2048  simd256    880.325 ms    4.44x  instr= 16866.5M  verify=OK
+N=512   naive        56.617 ms      4.74 GF/s    1.00x  instr=  4.08G  verify=OK
+N=512   simd128      20.033 ms     13.40 GF/s    2.83x  instr=  2.62G  verify=OK
+N=512   simd256       7.809 ms     34.38 GF/s    7.25x  instr=  3.42G  verify=OK
+
+N=1024  naive       492.392 ms      4.36 GF/s    1.00x  instr=  6.58G  verify=OK
+N=1024  simd128     190.617 ms     11.27 GF/s    2.58x  instr=  2.85G  verify=OK
+N=1024  simd256      84.940 ms     25.28 GF/s    5.80x  instr=  2.89G  verify=OK
+
+N=2048  naive      4274.931 ms      4.02 GF/s    1.00x  instr= 52.15G  verify=OK
+N=2048  simd128    4597.640 ms      3.74 GF/s    0.93x  instr= 11.31G  verify=OK
+N=2048  simd256     937.565 ms     18.32 GF/s    4.56x  instr=  5.94G  verify=OK
+
+N=4096  naive     35657.364 ms      3.85 GF/s    1.00x  instr=414.81G  verify=OK
+N=4096  simd128   21679.598 ms      6.34 GF/s    1.64x  instr= 88.33G  verify=OK
+N=4096  simd256   14940.294 ms      9.20 GF/s    2.39x  instr= 45.38G  verify=OK
 
 logged to /home/keyaan/Documents/SEM7/CS683/ASSIGNMENTS/Adv_Arch_Assignments/pa1/task2/bench/logs/task2b_simd.csv
-SIMD_DONE 0

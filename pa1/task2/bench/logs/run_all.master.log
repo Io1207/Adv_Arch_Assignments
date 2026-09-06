@@ -1,0 +1,111 @@
+======== collect_size (23:44:58) ========
+N=512   naive           69.774 ms      3.85 GF/s     1.00x  L1D-MPKI=  0.37  verify=OK
+N=512   simd             2.976 ms     90.19 GF/s    23.44x  L1D-MPKI= 19.48  verify=OK
+N=512   prefetch        36.670 ms      7.32 GF/s     1.90x  L1D-MPKI=  0.63  verify=OK
+N=512   optimized        3.629 ms     73.97 GF/s    19.23x  L1D-MPKI=  5.45  verify=OK
+
+N=1024  naive          594.122 ms      3.61 GF/s     1.00x  L1D-MPKI=  0.60  verify=OK
+N=1024  simd            26.808 ms     80.11 GF/s    22.16x  L1D-MPKI= 12.57  verify=OK
+N=1024  prefetch       243.034 ms      8.84 GF/s     2.44x  L1D-MPKI=  0.61  verify=OK
+N=1024  optimized       21.753 ms     98.72 GF/s    27.31x  L1D-MPKI=  5.99  verify=OK
+
+N=2048  naive         5596.364 ms      3.07 GF/s     1.00x  L1D-MPKI=  0.42  verify=OK
+N=2048  simd           235.787 ms     72.86 GF/s    23.73x  L1D-MPKI= 21.68  verify=OK
+N=2048  prefetch      1819.571 ms      9.44 GF/s     3.08x  L1D-MPKI=  0.61  verify=OK
+N=2048  optimized      183.673 ms     93.54 GF/s    30.47x  L1D-MPKI=  5.80  verify=OK
+
+N=4096  naive        45144.051 ms      3.04 GF/s     1.00x  L1D-MPKI=  0.35  verify=OK
+N=4096  simd          3812.513 ms     36.05 GF/s    11.84x  L1D-MPKI=104.25  verify=OK
+N=4096  prefetch     12410.981 ms     11.07 GF/s     3.64x  L1D-MPKI=  0.62  verify=OK
+N=4096  optimized     1276.530 ms    107.67 GF/s    35.36x  L1D-MPKI=  5.96  verify=OK
+
+logged to /home/keyaan/Documents/SEM7/CS683/ASSIGNMENTS/Adv_Arch_Assignments/pa1/task2/bench/logs/task2_size.csv
+
+======== collect_simd (23:54:33) ========
+N=512   naive        56.617 ms      4.74 GF/s    1.00x  instr=  4.08G  verify=OK
+N=512   simd128      20.033 ms     13.40 GF/s    2.83x  instr=  2.62G  verify=OK
+N=512   simd256       7.809 ms     34.38 GF/s    7.25x  instr=  3.42G  verify=OK
+
+N=1024  naive       492.392 ms      4.36 GF/s    1.00x  instr=  6.58G  verify=OK
+N=1024  simd128     190.617 ms     11.27 GF/s    2.58x  instr=  2.85G  verify=OK
+N=1024  simd256      84.940 ms     25.28 GF/s    5.80x  instr=  2.89G  verify=OK
+
+N=2048  naive      4274.931 ms      4.02 GF/s    1.00x  instr= 52.15G  verify=OK
+N=2048  simd128    4597.640 ms      3.74 GF/s    0.93x  instr= 11.31G  verify=OK
+N=2048  simd256     937.565 ms     18.32 GF/s    4.56x  instr=  5.94G  verify=OK
+
+N=4096  naive     35657.364 ms      3.85 GF/s    1.00x  instr=414.81G  verify=OK
+N=4096  simd128   21679.598 ms      6.34 GF/s    1.64x  instr= 88.33G  verify=OK
+N=4096  simd256   14940.294 ms      9.20 GF/s    2.39x  instr= 45.38G  verify=OK
+
+logged to /home/keyaan/Documents/SEM7/CS683/ASSIGNMENTS/Adv_Arch_Assignments/pa1/task2/bench/logs/task2b_simd.csv
+
+======== collect_prefetch (00:03:50) ========
+N=512   dist=0    hint=T0      66.774 ms   0.869x  verify=OK
+N=512   dist=16   hint=NTA    130.889 ms   0.443x  verify=OK
+N=512   dist=16   hint=T2     132.008 ms   0.439x  verify=OK
+N=512   dist=16   hint=T1     125.491 ms   0.462x  verify=OK
+N=512   dist=16   hint=T0     120.514 ms   0.481x  verify=OK
+N=512   dist=64   hint=NTA    135.630 ms   0.428x  verify=OK
+N=512   dist=64   hint=T2     120.689 ms   0.481x  verify=OK
+N=512   dist=64   hint=T1     133.402 ms   0.435x  verify=OK
+N=512   dist=64   hint=T0     133.477 ms   0.435x  verify=OK
+N=512   dist=256  hint=NTA    130.041 ms   0.446x  verify=OK
+N=512   dist=256  hint=T2     125.318 ms   0.463x  verify=OK
+N=512   dist=256  hint=T1     139.815 ms   0.415x  verify=OK
+N=512   dist=256  hint=T0     140.103 ms   0.414x  verify=OK
+
+N=1024  dist=0    hint=T0     501.505 ms   0.962x  verify=OK
+N=1024  dist=16   hint=NTA   1192.231 ms   0.404x  verify=OK
+N=1024  dist=16   hint=T2    1111.669 ms   0.434x  verify=OK
+N=1024  dist=16   hint=T1    1032.103 ms   0.467x  verify=OK
+N=1024  dist=16   hint=T0    1001.202 ms   0.482x  verify=OK
+N=1024  dist=64   hint=NTA    959.979 ms   0.502x  verify=OK
+N=1024  dist=64   hint=T2    1020.742 ms   0.472x  verify=OK
+N=1024  dist=64   hint=T1    1010.579 ms   0.477x  verify=OK
+N=1024  dist=64   hint=T0     979.713 ms   0.492x  verify=OK
+N=1024  dist=256  hint=NTA   1082.124 ms   0.446x  verify=OK
+N=1024  dist=256  hint=T2    1104.191 ms   0.437x  verify=OK
+N=1024  dist=256  hint=T1    1068.410 ms   0.451x  verify=OK
+N=1024  dist=256  hint=T0     971.825 ms   0.496x  verify=OK
+
+N=2048  dist=0    hint=T0    4363.009 ms   0.972x  verify=OK
+N=2048  dist=16   hint=NTA   8743.635 ms   0.485x  verify=OK
+N=2048  dist=16   hint=T2    8442.689 ms   0.502x  verify=OK
+N=2048  dist=16   hint=T1    8217.398 ms   0.516x  verify=OK
+N=2048  dist=16   hint=T0    8404.280 ms   0.505x  verify=OK
+N=2048  dist=64   hint=NTA   8278.965 ms   0.512x  verify=OK
+N=2048  dist=64   hint=T2    8616.051 ms   0.492x  verify=OK
+N=2048  dist=64   hint=T1    7890.031 ms   0.538x  verify=OK
+N=2048  dist=64   hint=T0    8548.355 ms   0.496x  verify=OK
+N=2048  dist=256  hint=NTA   8471.580 ms   0.501x  verify=OK
+N=2048  dist=256  hint=T2    8165.829 ms   0.519x  verify=OK
+N=2048  dist=256  hint=T1    8084.785 ms   0.525x  verify=OK
+N=2048  dist=256  hint=T0    8004.727 ms   0.530x  verify=OK
+
+logged to /home/keyaan/Documents/SEM7/CS683/ASSIGNMENTS/Adv_Arch_Assignments/pa1/task2/bench/logs/task2a_prefetch.csv
+
+======== collect_optimized (00:15:35) ========
+N=512   naive      55.912 ms      4.80 GF/s    1.00x  IPC= 3.21  verify=OK
+N=512   acc1        5.070 ms     52.95 GF/s   11.03x  IPC= 2.67  verify=OK
+N=512   acc2        7.731 ms     34.72 GF/s    7.23x  IPC= 3.46  verify=OK
+N=512   acc4        7.554 ms     35.54 GF/s    7.40x  IPC= 3.69  verify=OK
+
+N=1024  naive     476.696 ms      4.50 GF/s    1.00x  IPC= 3.05  verify=OK
+N=1024  acc1       40.840 ms     52.58 GF/s   11.67x  IPC= 2.22  verify=OK
+N=1024  acc2       70.628 ms     30.41 GF/s    6.75x  IPC= 3.27  verify=OK
+N=1024  acc4       71.501 ms     30.03 GF/s    6.67x  IPC= 3.50  verify=OK
+
+N=2048  naive    4539.620 ms      3.78 GF/s    1.00x  IPC= 2.70  verify=OK
+N=2048  acc1      496.183 ms     34.62 GF/s    9.15x  IPC= 1.59  verify=OK
+N=2048  acc2      688.758 ms     24.94 GF/s    6.59x  IPC= 2.41  verify=OK
+N=2048  acc4      821.280 ms     20.92 GF/s    5.53x  IPC= 2.70  verify=OK
+
+N=4096  naive   37091.867 ms      3.71 GF/s    1.00x  IPC= 2.52  verify=OK
+N=4096  acc1     7498.854 ms     18.33 GF/s    4.95x  IPC= 0.91  verify=OK
+N=4096  acc2     8640.135 ms     15.91 GF/s    4.29x  IPC= 1.71  verify=OK
+N=4096  acc4     8128.186 ms     16.91 GF/s    4.56x  IPC= 1.58  verify=OK
+
+logged to /home/keyaan/Documents/SEM7/CS683/ASSIGNMENTS/Adv_Arch_Assignments/pa1/task2/bench/logs/task2c_optimized.csv
+
+ALL SWEEPS DONE (00:24:35)
