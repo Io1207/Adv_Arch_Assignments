@@ -1,0 +1,23 @@
+N=128   naive      1.521 ms    1.00x  IPC= 4.09  verify=OK
+N=128   acc1       0.274 ms    5.55x  IPC= 4.35  verify=OK
+N=128   acc2       0.276 ms    5.51x  IPC= 3.85  verify=OK
+N=128   acc4       0.517 ms    2.94x  IPC= 4.09  verify=OK
+N=256   naive      6.371 ms    1.00x  IPC= 3.57  verify=OK
+N=256   acc1       1.864 ms    3.42x  IPC= 4.69  verify=OK
+N=256   acc2       1.590 ms    4.01x  IPC= 4.01  verify=OK
+N=256   acc4       1.474 ms    4.32x  IPC= 4.10  verify=OK
+N=512   naive     56.308 ms    1.00x  IPC= 3.22  verify=OK
+N=512   acc1       7.065 ms    7.97x  IPC= 4.77  verify=OK
+N=512   acc2       7.666 ms    7.34x  IPC= 4.05  verify=OK
+N=512   acc4      14.628 ms    3.85x  IPC= 4.10  verify=OK
+N=1024  naive    447.799 ms    1.00x  IPC= 3.08  verify=OK
+N=1024  acc1      53.774 ms    8.33x  IPC= 4.59  verify=OK
+N=1024  acc2      45.956 ms    9.74x  IPC= 3.92  verify=OK
+N=1024  acc4      98.199 ms    4.56x  IPC= 4.07  verify=OK
+N=2048  naive   3825.103 ms    1.00x  IPC= 2.90  verify=OK
+N=2048  acc1     479.826 ms    7.97x  IPC= 4.49  verify=OK
+N=2048  acc2     423.896 ms    9.02x  IPC= 3.83  verify=OK
+N=2048  acc4     917.474 ms    4.17x  IPC= 4.05  verify=OK
+
+logged to /home/keyaan/Documents/SEM7/CS683/ASSIGNMENTS/Adv_Arch_Assignments/pa1/task2/bench/logs/task2c_optimized.csv
+OPT_DONE 0

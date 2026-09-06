@@ -30,29 +30,6 @@
 #include "timer.h"
 #include "utils.h"
 
-// Reorder variants live in src/conv_reorder.cpp but are intentionally not
-// part of convolution.h (only conv_reorder is graded/interface); declare them
-// here so this analysis tool can name and compare them directly.
-extern void conv_reorder_ky_kx_oy_ox(const float*, float*, const float*, int, int, int);
-extern void conv_reorder_oy_ky_kx_ox(const float*, float*, const float*, int, int, int);
-
-// Unroll variants live in src/conv_unroll.cpp; only conv_unroll is part of
-// the graded interface (convolution.h). Declared here for the same reason.
-extern void conv_unroll_ox8(const float*, float*, const float*, int, int, int);
-extern void conv_unroll_kx4(const float*, float*, const float*, int, int, int);
-
-// SIMD width variants live in src/conv_simd.cpp; only conv_simd is graded.
-extern void conv_simd128(const float*, float*, const float*, int, int, int);
-extern void conv_simd256(const float*, float*, const float*, int, int, int);
-
-// Multi-accumulator variants live in src/conv_optimized.cpp; only
-// conv_optimized is graded.
-extern void conv_optimized_acc1(const float*, float*, const float*, int, int, int);
-extern void conv_optimized_acc2(const float*, float*, const float*, int, int, int);
-extern void conv_optimized_acc4(const float*, float*, const float*, int, int, int);
-extern void conv_optimized_acc8(const float*, float*, const float*, int, int, int);
-extern void conv_optimized_acc16(const float*, float*, const float*, int, int, int);
-
 namespace {
 
 struct StageEntry {
@@ -62,22 +39,11 @@ struct StageEntry {
 
 const StageEntry kStages[] = {
     {"naive", conv_naive},
-    {"reorder_a", conv_reorder_ky_kx_oy_ox},  // ky, kx, oy, ox (suggested order)
-    {"reorder_b", conv_reorder_oy_ky_kx_ox},  // oy, ky, kx, ox
-    {"reorder", conv_reorder},                // whichever variant conv_reorder currently wraps
-    {"unroll_ox8", conv_unroll_ox8},          // oy, ox(x8 accumulators), ky, kx
-    {"unroll_kx4", conv_unroll_kx4},          // oy, ox, ky, kx(x4, single accumulator)
-    {"unroll", conv_unroll},                  // whichever variant conv_unroll currently wraps
+    {"reorder", conv_reorder},
+    {"unroll", conv_unroll},
     {"tile", conv_tile},
-    {"simd128", conv_simd128},                // SSE,  4-wide
-    {"simd256", conv_simd256},                // AVX2, 8-wide
-    {"simd", conv_simd},                      // whichever width conv_simd currently wraps
-    {"opt_acc1", conv_optimized_acc1},        // 1 x __m256  (8-wide)
-    {"opt_acc2", conv_optimized_acc2},        // 2 x __m256  (16-wide)
-    {"opt_acc4", conv_optimized_acc4},        // 4 x __m256  (32-wide)
-    {"opt_acc8", conv_optimized_acc8},        // 8 x __m256  (64-wide)
-    {"opt_acc16", conv_optimized_acc16},      // 16 x __m256 (128-wide)
-    {"optimized", conv_optimized},            // whichever Nacc conv_optimized currently wraps
+    {"simd", conv_simd},
+    {"optimized", conv_optimized},
 };
 constexpr int kNumStages = sizeof(kStages) / sizeof(kStages[0]);
 
@@ -92,9 +58,7 @@ void usage(const char* prog) {
         "usage:\n"
         "  %s time <stage> H W K [warmup] [reps] [seed]\n"
         "  %s loop <stage> H W K reps [seed] [--verify]\n"
-        "stages: naive | reorder_a | reorder_b | reorder | unroll_ox8 | unroll_kx4 | unroll | "
-        "tile | simd128 | simd256 | simd | opt_acc1 | opt_acc2 | opt_acc4 | opt_acc8 | "
-        "opt_acc16 | optimized\n",
+        "stages: naive | reorder | unroll | tile | simd | optimized\n",
         prog, prog);
 }
 

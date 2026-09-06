@@ -10,13 +10,10 @@ COMMON_SRC := ../src/conv_naive.cpp ../src/conv_reorder.cpp ../src/conv_unroll.c
               ../src/conv_tile.cpp ../src/conv_simd.cpp ../src/conv_optimized.cpp
 
 .PHONY: all clean
-all: bench_stage bench_tile
+all: bench_stage
 
 bench_stage: $(COMMON_SRC) bench_stage.cpp
 	$(CXX) $(CXXFLAGS) $^ -o $@
 
-bench_tile: $(COMMON_SRC) bench_tile.cpp
-	$(CXX) $(CXXFLAGS) $^ -o $@
-
 clean:
-	rm -f bench_stage bench_tile
+	rm -f bench_stage
