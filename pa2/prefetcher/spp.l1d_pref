@@ -1,11 +1,26 @@
 #include "cache.h"
 
+#define HIGH_ACC 0.80
+#define MED_ACC 0.50
+#define LOW_ACC 0.20
+
+define IP_entry{};
+
+define PT_entry{};
+
+define Filter_entry{};
+
+define state{
+        
+};
 
 void CACHE::l1d_prefetcher_initialize() 
 {
     std::cout << "------------------------------------------------" << std::endl;
     std::cout << "        Stride Pattern Prefetcher (SPP)         " << std::endl;
     std::cout << "------------------------------------------------" << std::endl;
+
+
 }
 
 void CACHE::l1d_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint8_t critical_ip_flag)
