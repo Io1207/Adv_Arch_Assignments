@@ -1,16 +1,11 @@
 // matmul_optimized.cpp  STAGE 3: PUT IT ALL TOGETHER
 //
-// GEBP (Goto / BLIS) kernel: AVX2+FMA micro-kernel, cache blocking, on-the-fly packing,
-// and software prefetch. Tuned for the i7-12650H P-core (L1d 48 KB, L2 1.25 MB, L3 24 MB).
-//
-//   packed A panel   Mc x Kc          -> resident in L2
-//   packed B panel   Kc x N           -> resident in L3
-//     its Kc x Nr sliver              -> resident in L1
-//   C micro-tile     Mr x Nr = 6 x 16 -> 12 YMM accumulators, held across the whole Kc
-//
-// B arrives transposed (row j contiguous over the contraction index). pack_B gathers it
-// into k-major, Nr-contiguous panels so the micro-kernel is a pure broadcast+FMA stream
-// with NO horizontal reductions and an _mm256 add/store straight back into C.
+// This is the graded function AND the kernel that gets injected into llama.cpp. Combine
+// everything you have learned across the whole assignment  loop reordering, register
+// blocking and unrolling (Task 1 / Stage 1 here), cache tiling and software prefetch
+// (Stage 2)  and TUNE it to be as fast as you can. Your speedup over matmul_naive determines
+// your score (see the tier table the harness prints), and this same function will power a
+// real LLM inference via `make llama-demo`.
 
 #include <immintrin.h>
 #include <algorithm>
@@ -21,16 +16,14 @@
 #include "matmul.h"
 
 namespace {
+    constexpr int kMr = 6;
+    constexpr int kNr = 16;
+    constexpr int kNrV = kNr / 8;
 
-    constexpr int kMr  = 6;              // register-tile rows
-    constexpr int kNr  = 16;             // register-tile cols  (2 x __m256)
-    constexpr int kNrV = kNr / 8;        // vector columns per tile
+    constexpr int kKc = 256;
+    constexpr int kMc = 192;
 
-    constexpr int kKc = 256;             // K block
-    constexpr int kMc = 192;             // M block (multiple of kMr) -> packed A stays in L2
-    // Nc == N : the packed B panel lives in L3
-
-    constexpr int kPfDist = 16;          // k look-ahead for the in-kernel prefetch
+    constexpr int kPfDist = 16;
 
     inline int round_up(int x, int m) { return (x + m - 1) / m * m; }
 
@@ -39,10 +32,7 @@ namespace {
         return static_cast<float*>(std::aligned_alloc(64, bytes));
     }
 
-    // A[ic:ic+mc, pc:pc+kc] (row-major, stride lda)  ->  row-contiguous micro-panels
-    //   Apack[panel*(kMr*kc) + r*kc + k]   (ragged last panel zero-padded)
-    // The micro-kernel only broadcasts from A, so no transpose is needed: each row is a
-    // straight memcpy (vectorized libc, unaffected by -fno-tree-vectorize).
+    // The micro-kernel only broadcasts from A, so no transpose is needed: each row is a straight memcpy
     void pack_A(const float* __restrict__ A, int lda, int ic, int mc, int pc, int kc,
                 float* __restrict__ Apack) {
         const int panels = round_up(mc, kMr) / kMr;
@@ -58,10 +48,7 @@ namespace {
         }
     }
 
-    // B (transposed: row j contiguous over p, stride ldb), cols [0:n), slice [pc:pc+kc]
-    //   ->  Bpack[panel*(kc*kNr) + k*kNr + c]   (ragged last panel zero-padded)
-    void pack_B(const float* __restrict__ B, int ldb, int n, int pc, int kc,
-                float* __restrict__ Bpack) {
+    void pack_B(const float* __restrict__ B, int ldb, int n, int pc, int kc, float* __restrict__ Bpack) {
         const int panels = round_up(n, kNr) / kNr;
         for (int panel = 0; panel < panels; ++panel) {
             float* dst = Bpack + static_cast<long>(panel) * kc * kNr;
@@ -76,11 +63,8 @@ namespace {
         }
     }
 
-    // C[i0:i0+mr, j0:j0+nr] += Apanel(kMr x kc) . Bpanel(kc x kNr)   over kc.
-    // Apanel / Bpanel are contiguous and 32-byte aligned.
-    inline void micro_kernel(const float* __restrict__ Ap, const float* __restrict__ Bp,
-                             float* __restrict__ C, int i0, int j0, int kc,
-                             int mr, int nr, int ldc) {
+    inline void micro_kernel(const float* __restrict__ Ap, const float* __restrict__ Bp, float* __restrict__ C,
+                             int i0, int j0, int kc, int mr, int nr, int ldc) {
         std::array<std::array<__m256, kNrV>, kMr> acc;
         #pragma GCC unroll 8
         for (int r = 0; r < kMr; ++r)
@@ -125,7 +109,7 @@ namespace {
         }
     }
 
-    // Scalar fallback used if the pack buffers can't be allocated (never expected).
+    // Scalar fallback used if the pack buffers can't be allocated
     void matmul_ref(const float* A, const float* B, float* C,
                     int M, int N, int K, int lda, int ldb, int ldc) {
         for (int i = 0; i < M; ++i)
@@ -155,21 +139,21 @@ void matmul_optimized(const float* A, const float* B, float* C,
         return;
     }
 
-    for (int pc = 0; pc < K; pc += kKc) {              // K panels — C accumulates
+    for (int pc = 0; pc < K; pc += kKc) {
         const int kc = std::min(kKc, K - pc);
-        pack_B(B, ldb, N, pc, kc, Bpack);              // -> L3
+        pack_B(B, ldb, N, pc, kc, Bpack); // L3
 
-        for (int ic = 0; ic < M; ic += kMc) {          // M panels
+        for (int ic = 0; ic < M; ic += kMc) { // M panels
             const int mc = std::min(kMc, M - ic);
-            pack_A(A, lda, ic, mc, pc, kc, Apack);      // -> L2
+            pack_A(A, lda, ic, mc, pc, kc, Apack); // L2
             const int mpanels = round_up(mc, kMr) / kMr;
 
-            for (int jr = 0; jr < N; jr += kNr) {       // B micro-panels
+            for (int jr = 0; jr < N; jr += kNr) { // B micro-panels
                 const int nr = std::min(kNr, N - jr);
                 const float* Bp = Bpack + static_cast<long>(jr / kNr) * kc * kNr;
                 _mm_prefetch(reinterpret_cast<const char*>(Bp + kc * kNr), _MM_HINT_T0);
 
-                for (int q = 0; q < mpanels; ++q) {     // A micro-panels
+                for (int q = 0; q < mpanels; ++q) { // A micro-panels
                     const int i0 = ic + q * kMr;
                     const int mr = std::min(kMr, mc - q * kMr);
                     const float* Ap = Apack + static_cast<long>(q) * kMr * kc;
