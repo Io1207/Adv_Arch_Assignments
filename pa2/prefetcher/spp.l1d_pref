@@ -1,11 +1,15 @@
 #include "cache.h"
 
+// tunable parameters are wrapped in #ifndef so the grid search (scripts/spp_grid.sh) can override them with -D
 
 #define IP_TRACKER_COUNT 32
 #define MASK_IP 0xFFFF
 
-// longest non-uniform stride pattern we try to detect (PDF example (+1,+2,+2,+2,+3) has length 5)
-#define MAX_PATTERN_LEN 6
+// longest stride pattern we try to detect (PDF example (+1,+2,+2,+2,+3) has length 5);
+// a uniform stride is just a pattern of length 1
+#ifndef MAX_PATTERN_LEN
+#define MAX_PATTERN_LEN 16
+#endif
 // signature = last 2*MAX_PATTERN_LEN strides, enough to see the longest pattern twice
 #define SIG_LEN (2*MAX_PATTERN_LEN)
 
@@ -13,11 +17,15 @@
 // anything bigger can never produce an in-page prefetch and is ignored
 #define MAX_STRIDE 63
 
-// accuracy-based throttling: every EPOCH issued prefetches, recompute accuracy and pick a degree
+// accuracy-based throttling: every EPOCH prefetches sent to L2, recompute accuracy and pick a degree
 #define EPOCH 256
 #define MIN_DEGREE 1
+#ifndef MAX_DEGREE
 #define MAX_DEGREE 6
+#endif
+#ifndef START_DEGREE
 #define START_DEGREE 2
+#endif
 
 class IP_TRACKER {
   public:
@@ -33,7 +41,7 @@ class IP_TRACKER {
     // number of valid strides in the signature
     uint32_t sig_count;
 
-    // length of the non-uniform pattern currently being followed (0 = none)
+    // length of the pattern currently being followed (0 = none)
     uint32_t pattern_len;
 
     // use LRU to evict old IP trackers
@@ -72,12 +80,24 @@ static bool pattern_matches(IP_TRACKER &t, uint32_t p)
     return true;
 }
 
+// is the matched pattern a uniform stride, i.e. all of its p strides equal? (only used for stats)
+static bool pattern_is_uniform(IP_TRACKER &t, uint32_t p)
+{
+    for (uint32_t i=1; i<p; i++) {
+        if (t.sig[SIG_LEN-1-i] != t.sig[SIG_LEN-1])
+            return false;
+    }
+    return true;
+}
+
 
 void CACHE::l1d_prefetcher_initialize()
 {
     std::cout << "------------------------------------------------" << std::endl;
     std::cout << "        Stride Pattern Prefetcher (SPP)         " << std::endl;
     std::cout << "------------------------------------------------" << std::endl;
+    std::cout << "MAX_PATTERN_LEN " << MAX_PATTERN_LEN << " MAX_DEGREE " << MAX_DEGREE
+              << " START_DEGREE " << START_DEGREE << std::endl;
 	for (int i=0; i<IP_TRACKER_COUNT; i++)
         	trackers[i].lru = i;
 }
@@ -154,33 +174,29 @@ void CACHE::l1d_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit
         t.sig_count++;
 
     // pick the pattern to follow:
-    //   1. uniform stride (pattern of length 1) has priority
-    //   2. otherwise keep following the current non-uniform pattern if it still holds
-    //   3. otherwise search for a repeating pattern, longest first (short ones can hide inside long ones)
+    //   1. keep following the current pattern if it still holds
+    //   2. otherwise search for a repeating pattern, longest first, since a short pattern can hide inside
+    //      a longer one (e.g. 2,2 inside 1,2,2,2,3); length 1 is the uniform stride
     uint32_t p = 0;
-    if (pattern_matches(t, 1)) {
-        p = 1;
-        uniform_predictions++;
-    }
+    if (t.pattern_len && pattern_matches(t, t.pattern_len))
+        p = t.pattern_len;
     else {
-        if (t.pattern_len >= 2 && pattern_matches(t, t.pattern_len))
-            p = t.pattern_len;
-        else {
-            t.pattern_len = 0;
-            for (uint32_t len=MAX_PATTERN_LEN; len>=2; len--) {
-                if (pattern_matches(t, len)) {
-                    p = len;
-                    break;
-                }
+        for (uint32_t len=MAX_PATTERN_LEN; len>=1; len--) {
+            if (pattern_matches(t, len)) {
+                p = len;
+                break;
             }
         }
-        t.pattern_len = p;
-        if (p)
-            pattern_predictions++;
     }
+    t.pattern_len = p;
 
     if (p == 0)
         return;
+
+    if (pattern_is_uniform(t, p))
+        uniform_predictions++;
+    else
+        pattern_predictions++;
 
     // the signature maps to the next strides: after a pattern of length p, stride j comes from sig[SIG_LEN-p + j%p]
     uint64_t pf_cl_addr = cl_addr;
@@ -208,14 +224,17 @@ void CACHE::l1d_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit
     }
     uint64_t epoch_issued = pf_lower_level - epoch_start_issued;
     if (epoch_issued >= EPOCH) {
+        // degree bands scale with MAX_DEGREE (MAX_DEGREE 6 -> 6 / 4 / 2 / 1)
         double accuracy = (double)(pf_useful - epoch_start_useful) / epoch_issued;
         if (accuracy >= 0.75)
             spp_degree = MAX_DEGREE;
         else if (accuracy >= 0.50)
-            spp_degree = 4;
+            spp_degree = (2*MAX_DEGREE) / 3;
         else if (accuracy >= 0.25)
-            spp_degree = 2;
+            spp_degree = MAX_DEGREE / 3;
         else
+            spp_degree = MIN_DEGREE;
+        if (spp_degree < MIN_DEGREE)
             spp_degree = MIN_DEGREE;
         epoch_start_issued = pf_lower_level;
         epoch_start_useful = pf_useful;
