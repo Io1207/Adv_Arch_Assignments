@@ -1,6 +1,7 @@
 #include "cache.h"
 
 #define MAX_RRPV 3
+#define MASK 0xFF
 uint32_t l2_irrpv[L2C_SET][L2C_WAY];
 
 // initialising state for irrpv update
@@ -8,12 +9,9 @@ void CACHE::l2c_initialise_irrpv() {
     cout << "Initialising IRRIP state" << endl;
 
     for (int i = 0; i < L2C_SET; i++)
-    {
-        for (int j = 0; j < L2C_WAY; j++)
-        {
+        for (int j = 0; j < L2C_WAY; j++) 
             l2_irrpv[i][j] = MAX_RRPV;
-        }
-    }
+    
 }
 
 void CACHE::l2c_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t way, uint64_t full_addr, uint64_t ip, uint64_t victim_addr, uint32_t type, uint8_t hit, uint8_t isInstruction)
@@ -45,27 +43,32 @@ void CACHE::l2c_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t wa
         assert(0);
 
     // uncomment this line to see the L2C accesses
-    // cout << "CPU: " << cpu << "  L2C " << setw(9) << TYPE_NAME << " set: " << setw(5) << set << " way: " << setw(2) << way;
-    // cout << hex << " paddr: " << setw(12) << paddr << " ip: " << setw(8) << ip << " victim_addr: " << victim_addr << dec << endl;
+    cout << "CPU: " << cpu << "  L2C " << setw(9) << TYPE_NAME << " set: " << setw(5) << set << " way: " << setw(2) << way;
+    cout << hex << " paddr: " << setw(12) << paddr << " ip: " << setw(8) << ip << " victim_addr: " << victim_addr << dec << endl;
     
-    if (hit && isInstruction)
-        l2_rrpv[set][way] = 0;
-    else
-        l2_rrpv[set][way] = maxRRPV-1;  //insert with RRPV2
+    if (hit) l2_rrpv[set][way] = isInstruction ? 0 : 1;
+    else l2_rrpv[set][way] = isInstruction ? 1 : 2;
 }
 
 // find replacement victim
 uint32_t CACHE::l2c_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set, const BLOCK *current_set, uint64_t ip, uint64_t full_addr, uint32_t type)
 {
-    // look for the maxRRPV line
+    // look for the MAX_RRPV line
     while (1)
     {
-        for (int i=0; i<L2C_WAY; i++)
-            if (l2_rrpv[set][i] == maxRRPV)
-                return i;
+        // for (int i=0; i<L2C_WAY && current_set; i++)
+            // if (l2_irrpv[set][i] == MAX_RRPV)
+            //    return i;
 
         for (int i=0; i<L2C_WAY; i++)
-            l2_rrpv[set][i]++;
+            // l2_irrpv[set][i]++;
+            if (!current_set[way].valid) return way;
+
+        for (uint32_t way = 0; way < L2C_WAY; way++)
+            if (l2_rrpv[set][way] == MAX_RRPV) return way;
+
+        for (uint32_t way = 0; way < L2C_WAY; way++)
+            if (l2_rrpv[set][way] < MAX_RRPV) l2_rrpv[set][way]++;
     }
 
     // WE SHOULD NOT REACH HERE
