@@ -1,50 +1,46 @@
 #include "cache.h"
 
-// tunable parameters are wrapped in #ifndef so the grid search (scripts/spp_grid.sh) can override them with -D
-
+// num of ip trackers
 #define IP_TRACKER_COUNT 32
 #define MASK_IP 0xFFFF
 
-// longest stride pattern we try to detect (PDF example (+1,+2,+2,+2,+3) has length 5);
-// a uniform stride is just a pattern of length 1
-#ifndef MAX_PATTERN_LEN
 #define MAX_PATTERN_LEN 16
-#endif
-// signature = last 2*MAX_PATTERN_LEN strides, enough to see the longest pattern twice
-#define SIG_LEN (2*MAX_PATTERN_LEN)
-
-// strides are kept within +-63 cache lines (a 4 KB page has 64 lines), so they fit in 7 bits;
-// anything bigger can never produce an in-page prefetch and is ignored
+#define SIG_LEN (2 * MAX_PATTERN_LEN)
 #define MAX_STRIDE 63
 
-// accuracy-based throttling: every EPOCH prefetches sent to L2, recompute accuracy and pick a degree
+// pattern holds if wrong * 8 < total
+#define ERROR_DEN 8
+#define MIN_SAMPLES 8
+#define COUNTER_MAX 32
+
+// accuracy throttling
 #define EPOCH 256
-#define MIN_DEGREE 1
-#ifndef MAX_DEGREE
-#define MAX_DEGREE 6
-#endif
-#ifndef START_DEGREE
 #define START_DEGREE 2
-#endif
+#define ACC_HIGH 0.75
+#define ACC_MID 0.50
+#define ACC_LOW 0.25
+#define DEGREE_HIGH 8
+#define DEGREE_MID 4
+#define DEGREE_LOW 2
+#define DEGREE_MIN 1
 
 class IP_TRACKER {
   public:
-    // the IP we're tracking
     uint64_t ip;
-
-    // the last address accessed by this IP
     uint64_t last_cl_addr;
 
-    // signature: the recently observed strides of this IP, oldest first, newest at sig[SIG_LEN-1]
+    // signature: recent strides of this IP, newest at sig[SIG_LEN-1]
     int8_t sig[SIG_LEN];
-
-    // number of valid strides in the signature
     uint32_t sig_count;
 
-    // length of the pattern currently being followed (0 = none)
+    // locked pattern (0 = none), copied out of the signature so a later outlier does not corrupt it
+    int8_t pattern[MAX_PATTERN_LEN];
     uint32_t pattern_len;
+    // index in pattern[] of the next expected stride
+    uint32_t phase;
+    // predictions made by the locked pattern, and how many were wrong
+    uint32_t total, wrong;
 
-    // use LRU to evict old IP trackers
     uint32_t lru;
 
     IP_TRACKER () {
@@ -53,21 +49,23 @@ class IP_TRACKER {
         for (int i=0; i<SIG_LEN; i++)
             sig[i] = 0;
         sig_count = 0;
+        for (int i=0; i<MAX_PATTERN_LEN; i++)
+            pattern[i] = 0;
         pattern_len = 0;
+        phase = 0;
+        total = 0;
+        wrong = 0;
         lru = 0;
     };
 };
 
 IP_TRACKER trackers[IP_TRACKER_COUNT];
 
-// accuracy checker state: every L1D block has a prefetch bit; a demand hit on a block with the bit set
-// is a useful prefetch (cache.cc counts these in pf_useful), and pf_lower_level counts prefetches that
-// missed in L1D and were actually sent down. we sample both at the start of each epoch.
 uint32_t spp_degree = START_DEGREE;
 uint64_t epoch_start_issued = 0, epoch_start_useful = 0;
 uint64_t uniform_predictions = 0, pattern_predictions = 0;
 
-// does the last-p strides window of the signature repeat the p strides before it?
+// pattern checker
 static bool pattern_matches(IP_TRACKER &t, uint32_t p)
 {
     if (t.sig_count < 2*p)
@@ -80,14 +78,15 @@ static bool pattern_matches(IP_TRACKER &t, uint32_t p)
     return true;
 }
 
-// is the matched pattern a uniform stride, i.e. all of its p strides equal? (only used for stats)
-static bool pattern_is_uniform(IP_TRACKER &t, uint32_t p)
+// locks pattern to be used until confidence is broken
+static void lock_pattern(IP_TRACKER &t, uint32_t p)
 {
-    for (uint32_t i=1; i<p; i++) {
-        if (t.sig[SIG_LEN-1-i] != t.sig[SIG_LEN-1])
-            return false;
-    }
-    return true;
+    for (uint32_t i=0; i<p; i++)
+        t.pattern[i] = t.sig[SIG_LEN-p+i];
+    t.pattern_len = p;
+    t.phase = 0;
+    t.total = 0;
+    t.wrong = 0;
 }
 
 
@@ -96,17 +95,13 @@ void CACHE::l1d_prefetcher_initialize()
     std::cout << "------------------------------------------------" << std::endl;
     std::cout << "        Stride Pattern Prefetcher (SPP)         " << std::endl;
     std::cout << "------------------------------------------------" << std::endl;
-    std::cout << "MAX_PATTERN_LEN " << MAX_PATTERN_LEN << " MAX_DEGREE " << MAX_DEGREE
-              << " START_DEGREE " << START_DEGREE << std::endl;
-	for (int i=0; i<IP_TRACKER_COUNT; i++)
-        	trackers[i].lru = i;
+    for (int i=0; i<IP_TRACKER_COUNT; i++)
+        trackers[i].lru = i;
 }
 
 void CACHE::l1d_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint8_t critical_ip_flag)
 {
     uint64_t cl_addr = addr >> LOG2_BLOCK_SIZE;
-
-	// check for a tracker hit
     ip = ip & MASK_IP;
 
     int index = -1;
@@ -115,9 +110,8 @@ void CACHE::l1d_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit
             break;
     }
 
-    // this is a new IP that doesn't have a tracker yet, so allocate one
+    // new IP: replace the LRU tracker
     if (index == IP_TRACKER_COUNT) {
-
         for (index=0; index<IP_TRACKER_COUNT; index++) {
             if (trackers[index].lru == (IP_TRACKER_COUNT-1))
                 break;
@@ -129,18 +123,22 @@ void CACHE::l1d_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit
         trackers[index].ip = ip;
         trackers[index].last_cl_addr = cl_addr;
 
-	for (int i=0; i<IP_TRACKER_COUNT; i++) {
+        for (int i=0; i<IP_TRACKER_COUNT; i++) {
             if (trackers[i].lru < trackers[index].lru)
                 trackers[i].lru++;
         }
         trackers[index].lru = 0;
-
         return;
     }
 
     IP_TRACKER &t = trackers[index];
 
-    // calculate the stride between the current address and the last address
+    for (int i=0; i<IP_TRACKER_COUNT; i++) {
+        if (trackers[i].lru < t.lru)
+            trackers[i].lru++;
+    }
+    t.lru = 0;
+
     int64_t stride = 0;
     if (cl_addr > t.last_cl_addr)
         stride = cl_addr - t.last_cl_addr;
@@ -149,93 +147,87 @@ void CACHE::l1d_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit
         stride *= -1;
     }
 
-    // update LRU
-    for (int i=0; i<IP_TRACKER_COUNT; i++) {
-        if (trackers[i].lru < t.lru)
-            trackers[i].lru++;
-    }
-    t.lru = 0;
-
-    // same line twice in a row: nothing learnt
     if (stride == 0)
         return;
-
     t.last_cl_addr = cl_addr;
-
-    // a jump bigger than a page can't be prefetched within the page, so keep it out of the signature
     if (stride > MAX_STRIDE || stride < -MAX_STRIDE)
         return;
 
-    // push the stride into the signature
     for (int i=0; i<SIG_LEN-1; i++)
         t.sig[i] = t.sig[i+1];
     t.sig[SIG_LEN-1] = (int8_t)stride;
     if (t.sig_count < SIG_LEN)
         t.sig_count++;
 
-    // pick the pattern to follow:
-    //   1. keep following the current pattern if it still holds
-    //   2. otherwise search for a repeating pattern, longest first, since a short pattern can hide inside
-    //      a longer one (e.g. 2,2 inside 1,2,2,2,3); length 1 is the uniform stride
-    uint32_t p = 0;
-    if (t.pattern_len && pattern_matches(t, t.pattern_len))
-        p = t.pattern_len;
-    else {
-        for (uint32_t len=MAX_PATTERN_LEN; len>=1; len--) {
-            if (pattern_matches(t, len)) {
-                p = len;
-                break;
+    // score the locked pattern; it fails to hold once its error rate exceeds 1/ERROR_DEN
+    if (t.pattern_len) {
+        t.total++;
+        if (stride != t.pattern[t.phase])
+            t.wrong++;
+        t.phase = (t.phase + 1) % t.pattern_len;
+
+	// to keep rolling the counters
+        if (t.total >= COUNTER_MAX) {
+            t.total /= 2;
+            t.wrong /= 2;
+        }
+        if (t.total >= MIN_SAMPLES && t.wrong * ERROR_DEN > t.total)
+            t.pattern_len = 0;
+    }
+
+    // nothing locked: uniform stride first, then the longest repeating pattern
+    if (t.pattern_len == 0) {
+        if (pattern_matches(t, 1))
+            lock_pattern(t, 1);
+        else {
+            for (uint32_t len=MAX_PATTERN_LEN; len>=2; len--) {
+                if (pattern_matches(t, len)) {
+                    lock_pattern(t, len);
+                    break;
+                }
             }
         }
     }
-    t.pattern_len = p;
 
+    uint32_t p = t.pattern_len;
     if (p == 0)
         return;
 
-    if (pattern_is_uniform(t, p))
+    if (p == 1)
         uniform_predictions++;
     else
         pattern_predictions++;
 
-    // the signature maps to the next strides: after a pattern of length p, stride j comes from sig[SIG_LEN-p + j%p]
+    // stride j from now is pattern[(phase + j) % p]
     uint64_t pf_cl_addr = cl_addr;
     for (uint32_t i=0; i<spp_degree; i++) {
-        pf_cl_addr += t.sig[SIG_LEN - p + (i % p)];
+        pf_cl_addr += t.pattern[(t.phase + i) % p];
         uint64_t pf_address = pf_cl_addr << LOG2_BLOCK_SIZE;
 
-        // only issue a prefetch if the prefetch address is in the same 4 KB page
-        // as the current demand access address
         if ((pf_address >> LOG2_PAGE_SIZE) != (addr >> LOG2_PAGE_SIZE))
             break;
 
-        // check the MSHR occupancy to decide if we're going to prefetch to the L1 or L2
         if (MSHR.occupancy < (MSHR.SIZE>>1))
             prefetch_line(ip, addr, pf_address, FILL_L1, 0);
         else
             prefetch_line(ip, addr, pf_address, FILL_L2, 0);
     }
 
-    // accuracy-based throttling
-    // (the stats are reset at the end of warmup, so restart the epoch if they went backwards)
     if (pf_lower_level < epoch_start_issued || pf_useful < epoch_start_useful) {
         epoch_start_issued = pf_lower_level;
         epoch_start_useful = pf_useful;
     }
     uint64_t epoch_issued = pf_lower_level - epoch_start_issued;
     if (epoch_issued >= EPOCH) {
-        // degree bands scale with MAX_DEGREE (MAX_DEGREE 6 -> 6 / 4 / 2 / 1)
         double accuracy = (double)(pf_useful - epoch_start_useful) / epoch_issued;
-        if (accuracy >= 0.75)
-            spp_degree = MAX_DEGREE;
-        else if (accuracy >= 0.50)
-            spp_degree = (2*MAX_DEGREE) / 3;
-        else if (accuracy >= 0.25)
-            spp_degree = MAX_DEGREE / 3;
+        if (accuracy >= ACC_HIGH)
+            spp_degree = DEGREE_HIGH;
+        else if (accuracy >= ACC_MID)
+            spp_degree = DEGREE_MID;
+        else if (accuracy >= ACC_LOW)
+            spp_degree = DEGREE_LOW;
         else
-            spp_degree = MIN_DEGREE;
-        if (spp_degree < MIN_DEGREE)
-            spp_degree = MIN_DEGREE;
+            spp_degree = DEGREE_MIN;
         epoch_start_issued = pf_lower_level;
         epoch_start_useful = pf_useful;
     }
@@ -243,7 +235,7 @@ void CACHE::l1d_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit
 
 void CACHE::l1d_prefetcher_cache_fill(uint64_t v_addr, uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t v_evicted_addr, uint64_t evicted_addr, uint32_t metadata_in)
 {
-	return; //metadata_in;
+    return;
 }
 
 void CACHE::l1d_prefetcher_final_stats()
