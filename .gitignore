@@ -1,0 +1,7 @@
+23b0977_23b1011_23b1052_23b1083_pa1.tar.gz
+pa1/
+pa1/task2/bench/logs/figs/*.png
+pa2/bin/
+pa2/obj/
+pa2/traces/
+.DS_Store
