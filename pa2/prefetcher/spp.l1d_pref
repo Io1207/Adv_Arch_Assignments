@@ -1,10 +1,10 @@
 #include "cache.h"
 
 // num of ip trackers
-#define IP_TRACKER_COUNT 32
+#define IP_TRACKER_COUNT 256
 #define MASK_IP 0xFFFF
 
-#define MAX_PATTERN_LEN 16
+#define MAX_PATTERN_LEN 8
 #define SIG_LEN (2 * MAX_PATTERN_LEN)
 #define MAX_STRIDE 63
 
