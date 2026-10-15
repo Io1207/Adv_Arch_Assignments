@@ -1787,6 +1787,8 @@ int main(int argc, char** argv)
 		print_roi_stats(i, &ooo_cpu[i].BTB);
 #endif
         print_roi_stats(i, &ooo_cpu[i].L2C);
+        if (NUM_CPUS == 1)  // multi-core runs already print this in the total stats above
+            ooo_cpu[i].L2C.l2c_replacement_final_stats();
 	 #ifdef PUSH_DTLB_PB
         print_roi_stats(i, &ooo_cpu[i].DTLB_PB);
         #endif
